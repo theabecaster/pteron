@@ -89,7 +89,7 @@ struct KeyBarLayoutPage: View {
     /// The few keys that need a word on what they do.
     static let details: [String: String] = [
         "shift-tab": "Changes mode in an agent",
-        "shift-enter": "A new line in an agent",
+        "shift-enter": "Beside Return. A new line in an agent",
         "cmd": "⌘ for the next key, as on a Mac keyboard",
         "delete": "Deletes forward",
     ]
@@ -126,32 +126,38 @@ struct KeyBarLayoutPage: View {
 
     private func keys(_ section: KeyBarSetup.Section, _ list: [KeyBarSetup.Key], footer: String?) -> some View {
         Section {
-            ForEach(list) { key in
-                KeyBarCheckRow(title: Self.title(key.id), detail: Self.details[key.id], on: key.shown, theme: theme) {
+            // Shift-Return, pinned beside Return, is shown or hidden here but never moved: it is
+            // the section's last row, outside the rows that reorder.
+            let movable = list.filter { $0.id != KeyBarSetup.shiftReturn }
+            ForEach(movable) { key in row(section, key) }
+                .onMove { from, to in
                     prefs.editKeyBar { s in
                         switch section {
-                        case .primary: if let i = s.primary.firstIndex(where: { $0.id == key.id }) { s.primary[i].shown.toggle() }
-                        case .editing: if let i = s.editing.firstIndex(where: { $0.id == key.id }) { s.editing[i].shown.toggle() }
+                        case .primary: s.primary.move(fromOffsets: from, toOffset: to)
+                        case .editing: s.reorderEditing { $0.move(fromOffsets: from, toOffset: to) }
                         case .groups: break
                         }
                     }
                 }
-            }
-            .onMove { from, to in
-                prefs.editKeyBar { s in
-                    switch section {
-                    case .primary: s.primary.move(fromOffsets: from, toOffset: to)
-                    case .editing: s.editing.move(fromOffsets: from, toOffset: to)
-                    case .groups: break
-                    }
-                }
-            }
+            ForEach(list.filter { $0.id == KeyBarSetup.shiftReturn }) { key in row(section, key) }
         } header: {
             SettingsHeader(section.title, theme)
         } footer: {
             if let footer { SettingsFooter(footer, theme) }
         }
         .settingsRows(theme)
+    }
+
+    private func row(_ section: KeyBarSetup.Section, _ key: KeyBarSetup.Key) -> some View {
+        KeyBarCheckRow(title: Self.title(key.id), detail: Self.details[key.id], on: key.shown, theme: theme) {
+            prefs.editKeyBar { s in
+                switch section {
+                case .primary: if let i = s.primary.firstIndex(where: { $0.id == key.id }) { s.primary[i].shown.toggle() }
+                case .editing: if let i = s.editing.firstIndex(where: { $0.id == key.id }) { s.editing[i].shown.toggle() }
+                case .groups: break
+                }
+            }
+        }
     }
 }
 

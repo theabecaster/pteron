@@ -24,18 +24,17 @@ struct KeyBarSetupTests {
         }
     }
 
-    /// A layout's keys without those that have their own place now, and Shift-Return, which every
-    /// setup from before it gets.
+    /// A layout's keys without those that have their own place now.
     private func scrolling(_ layout: KeyBarLayout) -> [String] {
-        layout.keys.filter { !["arrows", "attach", "enter"].contains($0) } + ["shift-enter"]
+        layout.keys.filter { !["arrows", "attach", "enter"].contains($0) }
     }
 
     // MARK: First setup
 
     @Test func theFirstSetupIsForAgents() {
-        #expect(keys(.standard) == ["esc", "ctrl", "alt", "shift", "tab", "~", "|", "/", "-", "backspace", "paste",
-                                    "shift-enter"], "Shift-Return last, right before the pinned Return")
-        #expect(KeyBarSetup.editingKeys.prefix(3) == ["backspace", "paste", "shift-enter"])
+        #expect(keys(.standard) == ["esc", "ctrl", "alt", "shift", "tab", "~", "|", "/", "-", "backspace", "paste"])
+        #expect(KeyBarSetup.standard.showsShiftReturn, "Shift-Return shown, pinned beside Return, not scrolling")
+        #expect(KeyBarSetup.editingKeys.last == KeyBarSetup.shiftReturn)
         #expect(KeyBarSetup.standard.sections == [.primary, .groups, .editing])
         #expect(KeyBarSetup.standard.primary.map(\.id) == KeyBarSetup.primaryKeys)
         #expect(KeyBarSetup.standard.editing.map(\.id) == KeyBarSetup.editingKeys)
@@ -90,7 +89,7 @@ struct KeyBarSetupTests {
         s.sections.move(fromOffsets: IndexSet(integer: 2), toOffset: 0)
         #expect(keys(s).prefix(2) == ["backspace", "paste"])
         s.primary.move(fromOffsets: IndexSet(integer: 4), toOffset: 0)
-        #expect(keys(s)[3] == "tab")
+        #expect(keys(s)[2] == "tab")
         s.update(.characters) { $0.items.move(fromOffsets: IndexSet(integer: 3), toOffset: 0) }
         #expect(keys(s).suffix(4) == ["-", "~", "|", "/"])
     }
@@ -98,7 +97,7 @@ struct KeyBarSetupTests {
     @Test func groupsShowAsAButtonOrAsKeys() {
         var s = KeyBarSetup.standard
         s.update(.characters) { $0.expanded = false }
-        #expect(keys(s) == ["esc", "ctrl", "alt", "shift", "tab", "group:characters", "backspace", "paste", "shift-enter"])
+        #expect(keys(s) == ["esc", "ctrl", "alt", "shift", "tab", "group:characters", "backspace", "paste"])
         s.update(.characters) { g in for i in g.items.indices { g.items[i].on = false } }
         #expect(!keys(s).contains("group:characters"), "a group with nothing on shows nothing")
         s.update(.shortcuts) { $0.shown = true }
@@ -110,7 +109,7 @@ struct KeyBarSetupTests {
         let added = Shortcut.custom(label: "ls", send: .text("ls -la\n"))
         s.update(.characters) { $0.items.append(added) }
         #expect(keys(s) == ["esc", "ctrl", "alt", "shift", "tab", "~", "|", "/", "-", String(added.id.dropFirst(7)),
-                            "backspace", "paste", "shift-enter"])
+                            "backspace", "paste"])
         #expect(added.isCustom && added.on)
     }
 
@@ -135,9 +134,9 @@ struct KeyBarSetupTests {
         #expect(layout.group(.characters)?.items.count == ShortcutGroup.characters.count + 1, "shortcuts stay")
 
         var hidden = KeyBarSetup.standard
-        hidden.editing.removeAll { $0.id == "shift-enter" }
-        hidden.editing.append(KeyBarSetup.Key(id: "shift-enter", shown: false))
-        #expect(hidden.resetLayout().editing == KeyBarSetup.standard.editing, "Reset Layout shows Shift-Return")
+        hidden.editing[hidden.editing.count - 1].shown = false
+        #expect(!hidden.showsShiftReturn)
+        #expect(hidden.resetLayout().showsShiftReturn, "Reset Layout shows Shift-Return")
     }
 
     @Test func normalizingFillsWhatIsMissingAndDropsWhatIsNot() {
@@ -168,6 +167,7 @@ struct KeyBarSetupTests {
         let s = Prefs(defaults: d).keyBarSetup
         #expect(Set(keys(s)) == Set(scrolling(layout)), "\(layout)")
         #expect(keys(s).count == scrolling(layout).count, "no key twice")
+        #expect(s.showsShiftReturn, "every setup from before gets Shift-Return")
         #expect(s.items.allSatisfy { if case .group = $0 { false } else { true } }, "migrated groups are expanded")
         #expect(d.object(forKey: "keyBarLayout") == nil)
     }
@@ -187,7 +187,8 @@ struct KeyBarSetupTests {
         let d = fresh()
         d.set(["esc", "f1", "ctrl-o", "x"], forKey: "keyBar")
         let s = Prefs(defaults: d).keyBarSetup
-        #expect(Set(keys(s)) == ["esc", "f1", "ctrl-o", "x", "shift-enter"])
+        #expect(Set(keys(s)) == ["esc", "f1", "ctrl-o", "x"])
+        #expect(s.showsShiftReturn)
         #expect(s.group(.functionKeys)?.items.first { $0.on }?.id == "f1")
         let o = s.group(.shortcuts)?.items.first { $0.on }
         #expect(o?.label == "^O" && o?.send == .key(KeyStroke(key: "o", ctrl: true)))
@@ -203,8 +204,8 @@ struct KeyBarSetupTests {
 
     @Test func agentsKeepsItsMenuDigitsAndCommand() {
         let s = KeyBarSetup.migrating(KeyBarLayout.agents.keys)
-        #expect(keys(s) == ["esc", "shift-tab", "tab", "ctrl", "cmd", "/", "1", "2", "3", "ctrl-c", "up", "down", "paste",
-                            "shift-enter"])
+        #expect(keys(s) == ["esc", "shift-tab", "tab", "ctrl", "cmd", "/", "1", "2", "3", "ctrl-c", "up", "down", "paste"])
+        #expect(s.showsShiftReturn)
     }
 
     @Test func anInstallFromBeforeGetsTheAgentsLayoutItHad() {
@@ -252,7 +253,7 @@ struct KeyBarSetupTests {
     }
 
     /// The owner's setup, carried over from the Agents layout, and others: Shift-Return comes
-    /// shown, right after Editing's last shown key, and nothing else changes.
+    /// shown, pinned beside Return, and nothing else changes: the scrolling keys stay as they were.
     @Test func version2AddsShiftReturnOnceAndLeavesTheRest() throws {
         var edited = KeyBarSetup.migrating(KeyBarLayout.agents.keys)
         edited.editing.move(fromOffsets: IndexSet(integer: 0), toOffset: 3)
@@ -269,7 +270,9 @@ struct KeyBarSetupTests {
             let i = try #require(s.editing.firstIndex { $0.id == "shift-enter" })
             #expect(s.editing[i].shown)
             #expect(s.editing.filter { $0.id == "shift-enter" }.count == 1)
-            #expect(i == (old.editing.lastIndex(where: \.shown).map { $0 + 1 } ?? 0), "after Editing's last shown key")
+            #expect(i == s.editing.count - 1, "at Editing's end")
+            #expect(s.items == old.items, "the scrolling keys are as they were")
+            #expect(s.showsShiftReturn && !old.showsShiftReturn)
             var rest = s
             rest.editing.remove(at: i)
             rest.version = 1
@@ -278,10 +281,6 @@ struct KeyBarSetupTests {
             #expect(try stored(d) == s)
             #expect(try stored(d).version == 2)
         }
-        // The owner's bar: Shift-Return last, right before the pinned Return.
-        let d = fresh()
-        try store(version1(.migrating(KeyBarLayout.agents.keys)), in: d)
-        #expect(keys(Prefs(defaults: d).keyBarSetup).suffix(2) == ["paste", "shift-enter"])
     }
 
     @Test func aHiddenShiftReturnStaysHidden() throws {
@@ -295,12 +294,20 @@ struct KeyBarSetupTests {
         for _ in 0..<2 {
             #expect(Prefs(defaults: d).keyBarSetup == s, "never added again")
         }
-        #expect(!keys(Prefs(defaults: d).keyBarSetup).contains("shift-enter"))
-        // Moved, it stays where the user put it, too.
-        s.editing.move(fromOffsets: IndexSet(integer: i), toOffset: 0)
-        s.editing[0].shown = true
-        Prefs(defaults: d).keyBarSetup = s
-        #expect(Prefs(defaults: d).keyBarSetup == s)
+        #expect(!Prefs(defaults: d).keyBarSetup.showsShiftReturn)
+    }
+
+    /// Layout reorders Editing's other keys; Shift-Return keeps no place among them.
+    @Test func reorderingEditingLeavesShiftReturnPinned() {
+        var s = KeyBarSetup.standard
+        s.reorderEditing { $0.move(fromOffsets: IndexSet(integer: 1), toOffset: 0) }
+        #expect(keys(s).suffix(2) == ["paste", "backspace"])
+        #expect(s.editing.map(\.id) == ["paste", "backspace"] + KeyBarSetup.editingKeys.dropFirst(2))
+        #expect(s.showsShiftReturn)
+        // A key moved to the end of the list goes before Shift-Return, which stays last.
+        s.reorderEditing { $0.move(fromOffsets: IndexSet(integer: 0), toOffset: $0.count) }
+        #expect(s.editing.last?.id == KeyBarSetup.shiftReturn)
+        #expect(s.editing.count == KeyBarSetup.editingKeys.count)
     }
 
     @Test func aFreshInstallAndANewerSetupAreLeftAsTheyAre() throws {

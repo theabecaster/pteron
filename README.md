@@ -110,7 +110,7 @@ Shift-Tab.
 
 - **Return** stays at the end of the bar in every layout, next to the hide key; the other keys
   scroll. Hold it for Shift-Return: a new line in an agent's message without sending it. The ⇧⏎
-  key just before it sends Shift-Return with a tap.
+  key just before it does the same with a tap; Settings → Keyboard → Layout can hide it.
 
 - Tap **ctrl** or **alt** to apply it to the next key; double-tap to lock it on.
 - **cmd** is the Mac's ⌘: tap it, then a key, to run that Rex shortcut (cmd then `t` opens a tab,

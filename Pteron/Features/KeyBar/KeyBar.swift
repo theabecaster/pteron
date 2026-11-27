@@ -5,7 +5,8 @@ import UIKit
 /// - Left, fixed: ⌘ opens the command palette, ✎ opens or closes Compose, and the attach key
 ///   (paperclip) opens its menu where the pane's computer takes files.
 /// - Middle: the keys arranged in Settings → Keyboard (`KeyBarSetup`), scrolling sideways when
-///   they don't fit and fading at the edge that has more, then Return, pinned past a hairline.
+///   they don't fit and fading at the edge that has more, then Shift-Return (when shown) and
+///   Return, pinned past a hairline.
 /// - Right, fixed: the arrows key (✥), a trackpad, and the hide key. Where the system's vertical
 ///   bar sits beside the keyboard (iPhone Duo) the hide key is that bar's Hide Keyboard item
 ///   (`HideKeyboardItem`): the bar draws none, and nothing of it reaches into the bar's column,
@@ -226,7 +227,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
             leftStack.centerYAnchor.constraint(equalTo: leftCapsule.contentView.centerYAnchor),
             rightStack.leadingAnchor.constraint(equalTo: rightCapsule.contentView.leadingAnchor, constant: r),
             rightStack.centerYAnchor.constraint(equalTo: rightCapsule.contentView.centerYAnchor),
-            // Scrolling keys | divider | Return, Return concentric with the capsule's end.
+            // Scrolling keys | divider | Shift-Return, Return, Return concentric with the capsule's end.
             clip.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             clip.topAnchor.constraint(equalTo: content.topAnchor),
             clip.bottomAnchor.constraint(equalTo: content.bottomAnchor),
@@ -502,7 +503,8 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
         composeCap?.accessibilityValue = composeOpen ? "Open" : nil
         leftCaps.forEach(leftStack.addArrangedSubview)
 
-        caps = Prefs.shared.keyBarSetup.items.map { item in
+        let setup = Prefs.shared.keyBarSetup
+        caps = setup.items.map { item in
             switch item {
             case .key(let key): return makeCap(key)
             case .shortcut(let s): return makeShortcutCap(s)
@@ -518,8 +520,9 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
             self?.hold("enter")
             return true
         }]
-        pinnedCaps = [enter]
-        pinnedStack.addArrangedSubview(enter)
+        // Shift-Return, when shown, is pinned right before Return: it never scrolls away.
+        pinnedCaps = (setup.showsShiftReturn ? [makeCap(KeyBarSetup.shiftReturn)] : []) + [enter]
+        pinnedCaps.forEach(pinnedStack.addArrangedSubview)
 
         let hide = makeCap("hide")
         hideCap = hide

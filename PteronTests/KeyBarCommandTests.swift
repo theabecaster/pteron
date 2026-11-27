@@ -325,6 +325,27 @@ struct KeyBarCommandTests {
         #expect(spy.sent.last == Array("\u{1b}[27;2;13~".utf8))
     }
 
+    /// Shown, ⇧⏎ is pinned right before Return, outside the scrolling keys; hidden, Return is
+    /// pinned alone.
+    @Test func theShiftReturnKeyIsPinnedBeforeReturn() {
+        let saved = Prefs.shared.keyBarSetup
+        defer { Prefs.shared.keyBarSetup = saved }
+        Prefs.shared.keyBarSetup = .standard
+        let bar = KeyBar()
+        #expect(bar.pinnedCaps.map(\.key) == ["shift-enter", "enter"])
+        #expect(!bar.caps.contains { $0.key == "shift-enter" }, "it never scrolls")
+        func scrolls(_ v: UIView) -> Bool {
+            var s = v.superview
+            while let x = s, x !== bar { if x is UIScrollView { return true }; s = x.superview }
+            return false
+        }
+        #expect(!bar.pinnedCaps.contains(where: scrolls))
+        var hidden = KeyBarSetup.standard
+        hidden.editing[hidden.editing.count - 1].shown = false
+        Prefs.shared.keyBarSetup = hidden
+        #expect(KeyBar().pinnedCaps.map(\.key) == ["enter"])
+    }
+
     @Test func theShiftReturnKeyIsACapWithItsGlyphAndName() {
         let cap = KeyCap(key: "shift-enter", kind: KeyBar.kind(of: "shift-enter"))
         #expect(cap.accessibilityLabel == "Shift-Return")

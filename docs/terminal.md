@@ -778,8 +778,8 @@ Around that:
     `client.palette.toggle`); ✎ opens or closes Compose (below), with a pill while it is open;
     the attach key (paperclip) opens the attach menu where the pane's computer takes files
     (Files).
-  - **Middle:** the keys arranged in Settings → Keyboard (`KeyBarSetup`, below), then Return,
-    pinned past a hairline. They scroll sideways when they don't fit, and fade over 18 pt at an
+  - **Middle:** the keys arranged in Settings → Keyboard (`KeyBarSetup`, below), then
+    Shift-Return (⇧⏎, when shown) and Return, pinned past a hairline. They scroll sideways when they don't fit, and fade over 18 pt at an
     edge with more keys past it; the fade's mask changes only when which edges fade changes. On
     a wide window (the Duo unfolded, an iPad) the capsule shows more keys and, when all of them
     fit, hugs them.
@@ -795,9 +795,11 @@ Around that:
   - Keys are at least 40 pt wide, 2 pt apart, in capsules 6 pt apart and 6 pt from the sides.
 - Key bar setup (`KeyBarSetup`, Settings → Keyboard): the middle capsule in three sections, left
   to right in an order the user drags: **Primary** (esc, ctrl, option, shift, tab, then Shift-Tab
-  and Command, hidden at first), **Shortcut Groups** and **Editing** (Backspace, Paste and
-  Shift-Return, then Delete, Home, End, Page Up, Page Down and the four arrows, hidden at first). Each key is shown or
+  and Command, hidden at first), **Shortcut Groups** and **Editing** (Backspace and Paste, then
+  Delete, Home, End, Page Up, Page Down and the four arrows, hidden at first). Each key is shown or
   hidden with a tap and moved within its section with a drag; Reset Layout puts them back.
+  Shift-Return is Editing's last row, shown at first: a tap shows or hides it, but it doesn't
+  move, because when shown it is pinned beside Return (Key bar Return, below).
   - Three built-in groups: **Characters** (`~ | / - \ _ $ * . .. ? & :` and `1 2 3`, for an
     agent's numbered menus), **Shortcuts** (^C ^D ^Z ^L ^R ^A ^E ^U ^W ^K, each named for what it
     does) and **Function Keys** (F1–F12). A group shown in the bar is one key that opens a menu
@@ -806,10 +808,7 @@ Around that:
     sent exactly as written (a new line in it is the user's choice), or a key with ctrl,
     option and shift. Reset restores one group, Reset Shortcut Groups all of them.
   - The first setup is for agents: esc, ctrl, option, shift, tab, Characters expanded with
-    `~ | / -`, Backspace, Paste, Shift-Return (⇧⏎), which so sits right before the pinned Return.
-  - Shift-Return (⇧⏎, "Shift-Return" to VoiceOver) does what the held Return does (Key bar
-    Return, below), through the same path: the engine's encoder, `shift+cmd+enter` with cmd, the
-    composition committed while an input method composes. It never repeats.
+    `~ | / -`, Backspace, Paste.
   - A shortcut a bar key also sends (a character, a control letter, a function key, a plain
     named key) goes through that key's path, with the bar's modifiers and cmd; other text is
     written as it is, and another key as its chord with the bar's ctrl, option and shift added
@@ -817,11 +816,12 @@ Around that:
     `TerminalStream.send` and the catch-up fence, as any key.
   - Stored in `Prefs` as JSON with a version (`keyBarSetup`). Read back, it is normalized: a key,
     section or group it lacks is added hidden, one this version doesn't know is dropped.
+    Shift-Return is stored as Editing's last key, its `shown` the only thing that counts
+    (`showsShiftReturn`).
   - Version 2 added Shift-Return (`KeyBarSetup.addingShiftReturn`): a setup stored before it
-    gets the key shown, right after Editing's last shown key, and nothing else changes; one
-    carried over from the Agents layout so has it last, before Return. `Prefs.upgradeKeyBarSetup`
-    saves the result at once as version 2, so the step runs once and a key the user hides stays
-    hidden. A setup a newer version saved is left as it is.
+    gets the key shown, and nothing else changes. `Prefs.upgradeKeyBarSetup` saves the result at
+    once as version 2, so the step runs once and a key the user hides stays hidden. A setup a
+    newer version saved is left as it is.
   - From the layouts before it (`KeyBarLayout`, `Prefs.migrateKeyBar`), once: the layout picked
     (Agents, Shell or Vim), a key list the removed editor saved (matched to its layout, or taken
     as it is), or on an install that already ran with no choice saved, the Agents layout it had,
@@ -829,14 +829,14 @@ Around that:
     in its order within it, and the sections come in the order they first appear; characters and
     control keys become their group's shortcuts, the group shown and expanded, the ones the
     layout had turned on and first; a key no group has becomes a shortcut of its own. ✥, attach
-    and Return have their own places now, and Shift-Return is added as version 2 adds it. Only a
-    fresh install starts on the first setup.
+    and Return have their own places now, and Shift-Return is added shown, as version 2 adds it.
+    Only a fresh install starts on the first setup.
 
     | Layout | Primary | Shortcut Groups (expanded) | Editing |
     |---|---|---|---|
-    | Agents | esc ⇧⇥ ⇥ ctrl cmd | Characters `/ 1 2 3`, Shortcuts ^C | ↑ ↓ Paste ⇧⏎ |
-    | Shell | esc ⇥ ⇧⇥ ctrl option cmd | Shortcuts ^R ^C, Characters `\| ~ / -` | ↑ ↓ ← → Paste ⇧⏎ |
-    | Vim | esc ctrl cmd | Characters `: / $ ~`, Shortcuts ^D ^U ^R ^W | PgUp PgDn Paste ⇧⏎ |
+    | Agents | esc ⇧⇥ ⇥ ctrl cmd | Characters `/ 1 2 3`, Shortcuts ^C | ↑ ↓ Paste |
+    | Shell | esc ⇥ ⇧⇥ ctrl option cmd | Shortcuts ^R ^C, Characters `\| ~ / -` | ↑ ↓ ← → Paste |
+    | Vim | esc ctrl cmd | Characters `: / $ ~`, Shortcuts ^D ^U ^R ^W | PgUp PgDn Paste |
 
     Agents and Vim list their sections Primary, Shortcut Groups, Editing; Shell, whose arrows came
     before its control keys, Primary, Editing, Shortcut Groups.
@@ -866,14 +866,19 @@ Around that:
   without animation and only if it changed, and the palette's hold (`PadHold`) ends with a fresh
   measure rather than the value it kept.
 - Key bar Return: pinned at the end of the middle capsule, past a hairline, in every setup (it is
-  not part of it), so it never scrolls away. A tap sends what the bar's
-  Enter always sent: CR, ESC CR with alt, CR with ctrl (as Ctrl-M), and with cmd the
-  `cmd+enter` binding. It never repeats. Held for half a second (`KeyCap.holdDelay`, with a
-  medium haptic) it sends Shift-Return through the engine's encoder, as a hardware Shift-Return:
-  `CSI 27;2;13~`, or `CSI 13;2u` under the Kitty protocol, which agents such as Claude Code take
-  as a new line without sending; with cmd it runs `shift+cmd+enter`. VoiceOver offers it as the
-  "Shift-Return" action. The setup's ⇧⏎ key sends the same with a tap. While an input method composes, Return (tap or hold) types the
-  composition as it stands and sends nothing else, as the system keyboard's return does: composed
+  not part of it), so it never scrolls away. A tap sends what the bar's Enter always sent: CR,
+  ESC CR with alt, CR with ctrl (as Ctrl-M), and with cmd the `cmd+enter` binding. It never
+  repeats. Held for half a second (`KeyCap.holdDelay`, with a medium haptic) it sends
+  Shift-Return through the engine's encoder, as a hardware Shift-Return: `CSI 27;2;13~`, or
+  `CSI 13;2u` under the Kitty protocol, which agents such as Claude Code take as a new line
+  without sending; with cmd it runs `shift+cmd+enter`. VoiceOver offers it as the
+  "Shift-Return" action.
+- Key bar Shift-Return (⇧⏎, "Shift-Return" to VoiceOver): when shown, pinned right before
+  Return, past the same hairline, so it never scrolls away either; the scrolling keys get one key
+  less of room. A tap sends what the held Return sends, through the same path
+  (`KeyBar.shiftReturn`). It never repeats; held, it is a slow tap.
+- While an input method composes, Return (tap or hold) and ⇧⏎ type the composition as it stands
+  and send nothing else, as the system keyboard's return does: composed
   text hasn't reached the program, and sending Return would drop it. Under the agent board no bar
   key sends.
 - Key bar cmd: ⌘ for the next key, as on a Mac keyboard. That key is never typed. A bar key

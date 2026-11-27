@@ -163,16 +163,39 @@ struct FixedKeysTests {
         defer { w2.isHidden = true }
         #expect(without.leftCaps.map(\.key) == ["palette", "compose"], "no uploads: no attach key, as before")
         #expect(with.leftCaps.map(\.key) == ["palette", "compose", "attach"])
-        #expect(with.pinnedCaps.map(\.key) == ["enter"])
+        let pinned = (Prefs.shared.keyBarSetup.showsShiftReturn ? [KeyBarSetup.shiftReturn] : []) + ["enter"]
+        #expect(with.pinnedCaps.map(\.key) == pinned)
         #expect(with.rightCaps.map(\.key) == ["arrows", "hide"])
         for b in [without, with] {
-            let left = b.leftCaps.map(frame), right = b.rightCaps.map(frame), ret = frame(b.pinnedCaps[0])
+            let left = b.leftCaps.map(frame), right = b.rightCaps.map(frame), ret = frame(b.pinnedCaps.last!)
             #expect(abs(left[0].minX - (KeyBar.sideInset + KeyBar.ring)) < 0.5, "\(left[0])")
             #expect(abs(right.last!.maxX - (width - KeyBar.sideInset - KeyBar.ring)) < 0.5, "\(right.last!)")
-            #expect(ret.minX > left.last!.maxX + KeyBar.capsuleGap)
+            let pinned = b.pinnedCaps.map(frame)
+            #expect(pinned.first!.minX > left.last!.maxX + KeyBar.capsuleGap)
             #expect(ret.maxX < right[0].minX - KeyBar.capsuleGap)
-            for f in left + right + [ret] { #expect(f.width >= 40) }
+            for (a, c) in zip(pinned, pinned.dropFirst()) { #expect(a.maxX <= c.minX + 0.5, "pinned keys side by side") }
+            for f in left + right + pinned { #expect(f.width >= 40) }
         }
+    }
+
+    /// The pinned ⇧⏎ takes a key's room from the scrolling keys; at every width, from the folded
+    /// Duo to an iPhone in landscape (its width less the safe area, and the whole of it) and wider,
+    /// the first scrolling key, esc, still shows whole. At 375 pt (iPhone SE, mini) only without
+    /// the attach key: with it, esc shows about half.
+    @Test(arguments: [(375, false), (402, true), (466, true), (669, true), (750, true), (874, true), (951, true)]
+          as [(CGFloat, Bool)])
+    func escStillShowsBesideThePinnedKeys(width: CGFloat, attach: Bool) throws {
+        let saved = Prefs.shared.keyBarSetup
+        defer { Prefs.shared.keyBarSetup = saved }
+        Prefs.shared.keyBarSetup = .standard
+        let (b, w) = try bar(width: width, attach: attach)
+        defer { w.isHidden = true }
+        #expect(b.pinnedCaps.map(\.key) == [KeyBarSetup.shiftReturn, "enter"])
+        let esc = try #require(b.caps.first)
+        #expect(esc.key == "esc")
+        let f = frame(esc), pinned = frame(b.pinnedCaps[0])
+        #expect(f.minX > frame(b.leftCaps.last!).maxX + KeyBar.capsuleGap, "\(width): \(f)")
+        #expect(f.maxX <= pinned.minX - 6, "\(width): esc \(f) under the pinned keys \(pinned)")
     }
 
     /// Every posture with a vertical crease: no fixed key, and no scrolling key with the bar at

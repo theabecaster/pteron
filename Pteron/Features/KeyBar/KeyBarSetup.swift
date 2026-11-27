@@ -4,7 +4,8 @@ import Foundation
 /// Key bar). Three sections, left to right in the user's order: Primary keys, Shortcut Groups and
 /// Editing keys. Each key can be shown or hidden and moved within its section. The left capsule
 /// (⌘, compose, attach), the right one (the arrows, the hide key) and the pinned Return are not
-/// part of it. Stored in `Prefs` as JSON with a version. Pure, so it is tested.
+/// part of it. Shift-Return is shown or hidden here, but when shown it is pinned beside Return
+/// (`showsShiftReturn`), never among the scrolling keys. Stored in `Prefs` as JSON with a version. Pure, so it is tested.
 struct KeyBarSetup: Codable, Equatable {
     /// 2 added Shift-Return (`addingShiftReturn`).
     static let currentVersion = 2
@@ -38,15 +39,20 @@ struct KeyBarSetup: Codable, Equatable {
     /// Primary's keys in their first order. Shift-Tab and Command start hidden.
     static let primaryKeys = ["esc", "ctrl", "alt", "shift", "tab", "shift-tab", "cmd"]
     /// Editing's keys in their first order. The arrow keys are here for layouts that had them.
-    static let editingKeys = ["backspace", "paste", "shift-enter", "delete", "home", "end", "pgup", "pgdn", "up", "down", "left", "right"]
+    /// Shift-Return is listed last: shown, it is pinned beside Return, so its place in the list
+    /// means nothing.
+    static let editingKeys = ["backspace", "paste", "delete", "home", "end", "pgup", "pgdn", "up", "down", "left", "right",
+                              shiftReturn]
+    /// Shift-Return's bar key.
+    static let shiftReturn = "shift-enter"
 
     /// The first setup: for agents, as Rex's own key bar is. esc, ctrl, option, shift and tab,
-    /// the Characters ~ | / - as keys, then Backspace, Paste and Shift-Return, which sits right
-    /// before the pinned Return.
+    /// the Characters ~ | / - as keys, then Backspace and Paste; Shift-Return shown, pinned
+    /// beside Return.
     static let standard = KeyBarSetup(
         sections: Section.allCases,
         primary: primaryKeys.map { Key(id: $0, shown: !["shift-tab", "cmd"].contains($0)) },
-        editing: editingKeys.map { Key(id: $0, shown: ["backspace", "paste", "shift-enter"].contains($0)) },
+        editing: editingKeys.map { Key(id: $0, shown: ["backspace", "paste", shiftReturn].contains($0)) },
         groups: ShortcutGroup.Kind.allCases.map(ShortcutGroup.standard))
 
     /// Layout as Reset Layout leaves it: the sections and their keys as they first were. The
@@ -90,7 +96,7 @@ struct KeyBarSetup: Codable, Equatable {
         sections.flatMap { section -> [Item] in
             switch section {
             case .primary: return primary.filter(\.shown).map { .key($0.id) }
-            case .editing: return editing.filter(\.shown).map { .key($0.id) }
+            case .editing: return editing.filter { $0.shown && $0.id != Self.shiftReturn }.map { .key($0.id) }
             case .groups:
                 return groups.filter(\.shown).flatMap { g -> [Item] in
                     let on = g.items.filter(\.on)
@@ -99,6 +105,18 @@ struct KeyBarSetup: Codable, Equatable {
                 }
             }
         }
+    }
+
+    /// Shift-Return is shown: the bar pins it right before Return, past the hairline, where it
+    /// never scrolls away.
+    var showsShiftReturn: Bool { editing.contains { $0.id == Self.shiftReturn && $0.shown } }
+
+    /// Reorders Editing's keys as Layout lists them, Shift-Return left out: it is pinned, so it
+    /// keeps no place among them and stays at the list's end.
+    mutating func reorderEditing(_ body: (inout [Key]) -> Void) {
+        var keys = editing.filter { $0.id != Self.shiftReturn }
+        body(&keys)
+        editing = keys + editing.filter { $0.id == Self.shiftReturn }
     }
 
     /// The setup as stored, read back: a setup from before version 2 gets Shift-Return
@@ -128,15 +146,13 @@ struct KeyBarSetup: Codable, Equatable {
         return s
     }
 
-    /// Version 2's step: Shift-Return, shown, right after Editing's last shown key, as in the
-    /// first setup, so it sits before the pinned Return when Editing comes last. Nothing else
-    /// changes. It runs on a setup stored before version 2 and on a layout carried over from
-    /// before the setup, never again, so a user who hides the key keeps it hidden.
+    /// Version 2's step: Shift-Return shown, at Editing's end. Nothing else changes. It runs on a
+    /// setup stored before version 2 and on a layout carried over from before the setup, never
+    /// again, so a user who hides the key keeps it hidden.
     func addingShiftReturn() -> KeyBarSetup {
         var s = self
-        s.editing.removeAll { $0.id == "shift-enter" }
-        let at = s.editing.lastIndex(where: \.shown).map { $0 + 1 } ?? 0
-        s.editing.insert(Key(id: "shift-enter", shown: true), at: at)
+        s.editing.removeAll { $0.id == Self.shiftReturn }
+        s.editing.append(Key(id: Self.shiftReturn, shown: true))
         return s
     }
 

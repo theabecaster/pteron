@@ -181,7 +181,7 @@ struct KeyBarColumnTests {
             settle(bar, caps: bar.allCaps)
             // Within half a point: the stack lays keys out on the screen's pixels.
             let fold = p.division!.frame.insetBy(dx: -KeyBarPlacement.creaseClearance + 0.5, dy: 0)
-            #expect(bar.pinnedCaps.map(\.key) == ["enter"])
+            #expect(bar.pinnedCaps.last?.key == "enter")
             for cap in bar.allCaps where !cap.isHidden {
                 let f = cap.convert(cap.bounds, to: nil)
                 #expect(f.maxX <= fold.minX || f.minX >= fold.maxX, "\(p.name): \(f) on \(fold)")
