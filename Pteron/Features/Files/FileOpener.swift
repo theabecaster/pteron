@@ -224,15 +224,21 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                 let root = try FileStaging.folder(in: FileStaging.incoming)
                 staging = root
                 var result: FsDownloader.Result?
+                // Progress hops to the main actor on its own; once the download is over, a late
+                // one must not put the notice back.
+                let over = OverFlag()
+                defer { over.set = true }
                 try await withFsBlock { blockID, open in
                     let d = FsDownloader(control: control, sessionID: sessionID, blockID: blockID, open: open)
                     self.treeDownloader = d
                     if self.folderCancelled { d.cancel() }
                     result = try await d.download([path], into: root, hasRoom: { Self.hasRoom(for: $0) }) { got, size in
+                        guard !over.set else { return }
                         let f = size > 0 ? min(Double(got) / Double(size), 1) : 0
                         Notice.shared.showProgress("\(destination.verb) \(name) · \(Int(f * 100))%", fraction: f, cancel: cancel)
                     }
                 }
+                over.set = true
                 guard let result, let top = result.tops.first else { throw FsDownloader.Failure.lost("nothing arrived") }
                 #if DEBUG
                 // `FILES_FOLDER <copy>`: where the folder is until it is saved, to check it against the computer's.
@@ -428,4 +434,10 @@ private final class Incoming: @unchecked Sendable {
         try? handle?.close()
         handle = nil
     }
+}
+
+/// Set once a folder download is over, read by its late progress.
+@MainActor
+private final class OverFlag {
+    var set = false
 }

@@ -192,6 +192,7 @@ final class FileSender {
             let plan: TarPlan
             do {
                 plan = try await Self.plan(items, inside: landing, cancelled: flag)
+                if flag.isSet { throw TarPlan.Failure.cancelled }
             } catch {
                 self.planCancelled = nil
                 self.claimed = false
