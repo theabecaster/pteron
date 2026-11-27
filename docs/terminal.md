@@ -862,6 +862,14 @@ Around that:
     Keys send on release, and a sideways drag scrolls the middle capsule and cancels the key
     under it.
   - Keys are at least 40 pt wide, 2 pt apart, in capsules 6 pt apart and 6 pt from the sides.
+  - Room for one key: the scrolling keys always keep at least 40 pt, or all of their width where
+    they are fewer (`KeyBarPlacement.tightening`). A bar short of that (a 375 pt iPhone with the
+    attach key: 26 pt were left, and esc, 45.5 pt, showed half) takes it in this order: the
+    spaces between and beside the capsules from 6 to 4 pt, then Shift-Return's margins down to a
+    44 pt key, then the spaces down to 2 pt. No key gets narrower than it is, so every touch
+    target stays as it was. A bar with the room (390 pt and up, the Duo, an iPad) gives up
+    nothing. A window narrower than any iPhone (320 pt) with the attach key can't hold every
+    key: its fixed keys stay whole and the scrolling keys get what is left.
 - Key bar setup (`KeyBarSetup`, Settings → Keyboard): the middle capsule in three sections, left
   to right in an order the user drags: **Primary** (esc, ctrl, option, shift, tab, then Shift-Tab
   and Command, hidden at first), **Shortcut Groups** and **Editing** (Backspace and Paste, then

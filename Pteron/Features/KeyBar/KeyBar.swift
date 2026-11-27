@@ -147,6 +147,8 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
     private let divider = UIView()
     private var dividerWidth: NSLayoutConstraint?
     private var placement = KeyBarPlacement.HideKey.inBar
+    /// What the bar gave up for room for its scrolling keys; none where it has the room. Internal for tests.
+    private(set) var tightening = KeyBarPlacement.Tightening.none
     private var stackLeading: NSLayoutConstraint?
     private var creaseGap: (index: Int, extra: CGFloat)?
     /// The space between keys in a capsule.
@@ -376,20 +378,44 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
     /// Places the capsules and the card. The left and right capsules hug their keys at the ends
     /// of the space the bar may use (`KeyBarPlacement.span`: inside its safe area, short of the
     /// vertical bar's column); the middle one starts after the left one and is as wide as its keys
-    /// need, up to the right one. The card spans the same space above them.
+    /// need, up to the right one. The card spans the same space above them. A bar too narrow to
+    /// leave the scrolling keys room for one key takes it from the spaces and Shift-Return
+    /// (`KeyBarPlacement.tightening`).
     private func layoutGlass() {
         let h = keyHeight + 2 * Self.ring
         let card = composeOpen ? ComposeCard.height(compact: compact) + Self.cardGap : 0
         let rowHeight = max(bounds.height - safeAreaInsets.bottom - card, h)
-        let span = KeyBarPlacement.span(width: bounds.width, leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right,
-                                        sideInset: Self.sideInset, column: localColumn)
         let y = card + ((rowHeight - h) / 2).rounded()
         let leftW = Self.width(leftCaps), rightW = Self.width(rightCaps)
-        let lo = span.lowerBound + (leftW > 0 ? leftW + Self.capsuleGap : 0)
-        let hi = span.upperBound - (rightW > 0 ? rightW + Self.capsuleGap : 0)
-        let available = max(hi - lo, h)
-        let pinnedW = pinnedCaps.reduce(0) { $0 + $1.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width }
+        let shiftReturn = pinnedCaps.count > 1 ? pinnedCaps.first : nil
+        // The pinned keys untrimmed (`KeyCap.trim`): Shift-Return's trim comes off its margins.
+        let pinnedFull = pinnedCaps.reduce(0) { $0 + $1.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width + $1.trim }
         let keysW = caps.isEmpty ? 0 : stack.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width + 2 * Self.ring
+        func spanFor(gap: CGFloat) -> ClosedRange<CGFloat> {
+            KeyBarPlacement.span(width: bounds.width, leftInset: safeAreaInsets.left, rightInset: safeAreaInsets.right,
+                                 sideInset: Self.sideInset - gap, column: localColumn)
+        }
+        func room(_ span: ClosedRange<CGFloat>, gap: CGFloat) -> ClosedRange<CGFloat> {
+            let lo = span.lowerBound + (leftW > 0 ? leftW + Self.capsuleGap - gap : 0)
+            let hi = span.upperBound - (rightW > 0 ? rightW + Self.capsuleGap - gap : 0)
+            return lo...max(lo, hi)
+        }
+        // The scrolling keys keep room for one key, or for all of them where they are fewer: a
+        // narrow bar takes it from the spaces around the capsules and from Shift-Return's margins.
+        let full = room(spanFor(gap: 0), gap: 0)
+        let scrollRoom = full.upperBound - full.lowerBound - 6 - (dividerWidth?.constant ?? 1) - pinnedFull - Self.ring
+        let natural = shiftReturn.map { $0.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width + $0.trim } ?? 0
+        tightening = KeyBarPlacement.tightening(
+            shortfall: min(keysW, KeyCap.minWidth) - scrollRoom,
+            spaces: 2 + (leftW > 0 ? 1 : 0) + (rightW > 0 ? 1 : 0),
+            shiftReturnSpare: shiftReturn == nil ? 0 : min(2 * KeyCap.margin, natural - KeyBarPlacement.minTarget),
+            scale: traitCollection.displayScale)
+        shiftReturn?.trim = tightening.shiftReturn
+        let span = spanFor(gap: tightening.gap)
+        let middle = room(span, gap: tightening.gap)
+        let lo = middle.lowerBound
+        let available = max(middle.upperBound - lo, h)
+        let pinnedW = pinnedFull - tightening.shiftReturn
         var middleW = min(available, keysW + 7 + pinnedW + Self.ring)
         // Return never sits on a vertical crease: on one, the capsule runs to the right capsule.
         if let fold = localCrease, middleW < available {
@@ -1108,6 +1134,24 @@ final class KeyCap: UIControl {
     var modState: KeyBar.ModState = .off { didSet { if modState != oldValue { restyle() } } }
     /// The key's height; the bar sets it (thinner under a short window).
     private(set) var heightConstraint: NSLayoutConstraint?
+    /// The narrowest a key is.
+    static let minWidth: CGFloat = 40
+    /// The space beside a key's title or symbol.
+    static let margin: CGFloat = 9
+    /// Points taken off the key's two margins together: a bar short of room narrows Shift-Return
+    /// (`KeyBarPlacement.tightening`). 0 everywhere else.
+    var trim: CGFloat = 0 {
+        didSet {
+            guard trim != oldValue else { return }
+            let m = max(Self.margin - trim / 2, 0)
+            labelLeading?.constant = m
+            labelTrailing?.constant = -m
+            iconLeading?.constant = m
+        }
+    }
+    private var labelLeading: NSLayoutConstraint?
+    private var labelTrailing: NSLayoutConstraint?
+    private var iconLeading: NSLayoutConstraint?
 
     private let face = UIView()
     private let label = UILabel()
@@ -1148,23 +1192,26 @@ final class KeyCap: UIControl {
         face.addSubview(label)
         face.addSubview(icon)
         face.addSubview(lockBar)
-        let minW: CGFloat = 40
         let height = heightAnchor.constraint(equalToConstant: KeyBar.keyHeight)
         heightConstraint = height
+        let labelLeading = label.leadingAnchor.constraint(equalTo: face.leadingAnchor, constant: Self.margin)
+        let labelTrailing = label.trailingAnchor.constraint(equalTo: face.trailingAnchor, constant: -Self.margin)
+        // A wide symbol (a pair) widens the key, with the label's margins.
+        let iconLeading = icon.leadingAnchor.constraint(greaterThanOrEqualTo: face.leadingAnchor, constant: Self.margin)
+        (self.labelLeading, self.labelTrailing, self.iconLeading) = (labelLeading, labelTrailing, iconLeading)
         NSLayoutConstraint.activate([
             height,
-            widthAnchor.constraint(greaterThanOrEqualToConstant: minW),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minWidth),
             face.leadingAnchor.constraint(equalTo: leadingAnchor),
             face.trailingAnchor.constraint(equalTo: trailingAnchor),
             face.topAnchor.constraint(equalTo: topAnchor),
             face.bottomAnchor.constraint(equalTo: bottomAnchor),
-            label.leadingAnchor.constraint(equalTo: face.leadingAnchor, constant: 9),
-            label.trailingAnchor.constraint(equalTo: face.trailingAnchor, constant: -9),
+            labelLeading,
+            labelTrailing,
             label.centerYAnchor.constraint(equalTo: face.centerYAnchor),
             icon.centerXAnchor.constraint(equalTo: face.centerXAnchor),
             icon.centerYAnchor.constraint(equalTo: face.centerYAnchor),
-            // A wide symbol (a pair) widens the key, with the label's margins.
-            icon.leadingAnchor.constraint(greaterThanOrEqualTo: face.leadingAnchor, constant: 9),
+            iconLeading,
             lockBar.centerXAnchor.constraint(equalTo: face.centerXAnchor),
             lockBar.bottomAnchor.constraint(equalTo: face.bottomAnchor, constant: -5),
             lockBar.widthAnchor.constraint(equalToConstant: 16),

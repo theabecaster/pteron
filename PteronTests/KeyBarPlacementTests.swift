@@ -168,11 +168,13 @@ struct FixedKeysTests {
         #expect(with.rightCaps.map(\.key) == ["arrows", "hide"])
         for b in [without, with] {
             let left = b.leftCaps.map(frame), right = b.rightCaps.map(frame), ret = frame(b.pinnedCaps.last!)
-            #expect(abs(left[0].minX - (KeyBar.sideInset + KeyBar.ring)) < 0.5, "\(left[0])")
-            #expect(abs(right.last!.maxX - (width - KeyBar.sideInset - KeyBar.ring)) < 0.5, "\(right.last!)")
+            // Narrower spaces where the bar makes room for its scrolling keys (`KeyBarRoomTests`).
+            let inset = KeyBar.sideInset - b.tightening.gap, gap = KeyBar.capsuleGap - b.tightening.gap
+            #expect(abs(left[0].minX - (inset + KeyBar.ring)) < 0.5, "\(left[0])")
+            #expect(abs(right.last!.maxX - (width - inset - KeyBar.ring)) < 0.5, "\(right.last!)")
             let pinned = b.pinnedCaps.map(frame)
-            #expect(pinned.first!.minX > left.last!.maxX + KeyBar.capsuleGap)
-            #expect(ret.maxX < right[0].minX - KeyBar.capsuleGap)
+            #expect(pinned.first!.minX > left.last!.maxX + gap)
+            #expect(ret.maxX < right[0].minX - gap)
             for (a, c) in zip(pinned, pinned.dropFirst()) { #expect(a.maxX <= c.minX + 0.5, "pinned keys side by side") }
             for f in left + right + pinned { #expect(f.width >= 40) }
         }
@@ -180,8 +182,8 @@ struct FixedKeysTests {
 
     /// The pinned ⇧⏎ takes a key's room from the scrolling keys; at every width, from the folded
     /// Duo to an iPhone in landscape (its width less the safe area, and the whole of it) and wider,
-    /// the first scrolling key, esc, still shows whole. At 375 pt (iPhone SE, mini) only without
-    /// the attach key: with it, esc shows about half.
+    /// the first scrolling key, esc, still shows whole. At 375 pt (iPhone SE, mini) with the attach
+    /// key the bar makes room for its title instead (`KeyBarRoomTests`).
     @Test(arguments: [(375, false), (402, true), (466, true), (669, true), (750, true), (874, true), (951, true)]
           as [(CGFloat, Bool)])
     func escStillShowsBesideThePinnedKeys(width: CGFloat, attach: Bool) throws {
@@ -216,5 +218,43 @@ struct FixedKeysTests {
                 #expect(f.maxX <= fold.minX || f.minX >= fold.maxX, "\(p.name) \(cap.key): \(f) on \(fold)")
             }
         }
+    }
+
+    // MARK: Room for the scrolling keys
+
+    private func tight(_ shortfall: CGFloat, spaces: Int = 4, spare: CGFloat = 16.5, scale: CGFloat = 2)
+        -> KeyBarPlacement.Tightening {
+        KeyBarPlacement.tightening(shortfall: shortfall, spaces: spaces, shiftReturnSpare: spare, scale: scale)
+    }
+
+    @Test func aBarWithRoomGivesUpNothing() {
+        #expect(tight(0) == .none)
+        #expect(tight(-30) == .none)
+        #expect(tight(10, spaces: 0) == .none)
+    }
+
+    @Test func theSpacesGoFirstThenShiftReturnThenTheSpacesAgain() {
+        // Up to 2 pt off each of the four spaces.
+        #expect(tight(6) == .init(gap: 1.5, shiftReturn: 0))
+        #expect(tight(8) == .init(gap: 2, shiftReturn: 0))
+        // A 375 pt iPhone with attach: 14 pt short.
+        #expect(tight(14) == .init(gap: 2, shiftReturn: 6))
+        #expect(tight(24.5) == .init(gap: 2, shiftReturn: 16.5))
+        // Then the spaces again, to 2 pt.
+        #expect(tight(28.5) == .init(gap: 3, shiftReturn: 16.5))
+        #expect(tight(100) == .init(gap: 4, shiftReturn: 16.5))
+    }
+
+    @Test func withoutShiftReturnOrASideCapsuleTheSpacesTakeAll() {
+        #expect(tight(12, spare: 0) == .init(gap: 3, shiftReturn: 0))
+        #expect(tight(9, spaces: 3, spare: 0) == .init(gap: 3, shiftReturn: 0))
+        // A negative spare (a narrow pair) gives nothing.
+        #expect(tight(12, spare: -2) == .init(gap: 3, shiftReturn: 0))
+    }
+
+    @Test func spacesAreWholePixels() {
+        // 5 pt over four spaces is 1.25 pt each: 1 1/3 pt on a 3x screen, 1.5 on a 2x one.
+        #expect(tight(5, scale: 3).gap == 4.0 / 3)
+        #expect(tight(5, scale: 2).gap == 1.5)
     }
 }
