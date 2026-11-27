@@ -694,7 +694,7 @@ final class PaneShare {
     static let textLimit = 256 * 1024
 
     let server: ServerConnection
-    let sessionID: String
+    var sessionID: String
     let blockID: String
     weak var host: TerminalHost?
 

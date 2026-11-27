@@ -256,6 +256,9 @@ enum RexCommand: Equatable {
     case minimizeFloat, minimizeAllFloats
     /// Moves the tab one place forward (+1) or back (-1) in its session (`client.tab.move.*`).
     case moveTab(Int)
+    /// Move Tab to Session…: the palette lists the computer's other sessions, and the one picked
+    /// takes the tab (`client.tab.move_to_session`, the app's own).
+    case moveTabToSession
     /// Opens the palette (`pane.go_to`, `session.switch`, `client.palette.toggle`).
     case goTo(GoToScope)
 }
@@ -292,6 +295,8 @@ final class AppModel {
         didSet {
             for s in servers where s.viewsChanged == nil {
                 s.viewsChanged = { [weak self] s, old in self?.viewsChanged(on: s, old: old) }
+                s.tabMoved = { [weak self] s, move in self?.tabMoved(on: s, move) }
+                s.tabMoving = { [weak self] s, moving in self?.tabMoving(on: s, moving) }
             }
         }
     }
@@ -999,6 +1004,52 @@ final class AppModel {
         moveOff(sel, on: server, order: old[sel.sessionID]?.windows.map(\.id) ?? [], movedTo: moved)
     }
 
+    // MARK: Moving a tab to another session
+
+    /// Move to Session (the tab menus, the palette's Move Tab to Session…, a sidebar drop): tab
+    /// `wid` of `sid` goes to session `dest` of the same computer, before its tab `before`
+    /// (nil: last), its programs running. It becomes the destination's active tab only when it
+    /// is the tab on screen, which the app follows there (`tabMoved`), as showing a tab makes it
+    /// active; another tab leaves the destination's active tab as it is.
+    func moveTab(_ server: ServerConnection, session sid: String, window wid: String, to dest: String,
+                 before: String? = nil, haptic: Bool = true) {
+        guard server.moveDestinations(from: sid).contains(where: { $0.id == dest }),
+              let v = server.views[sid], v.window(wid) != nil else {
+            Haptic.bump()
+            return
+        }
+        if haptic { Haptic.tap() }
+        let focus = selection == Selection(serverID: server.id, sessionID: sid, windowID: wid)
+        Task { await server.transferTab(sid, wid, to: dest, before: before, focus: focus) }
+    }
+
+    /// A tab changed sessions on a computer (this iPhone's move or another client's), in the turn
+    /// its views show it: its panes keep their terminals under the new session and open their
+    /// streams through it, the tab on screen stays on screen, and the places that name it (recent
+    /// tabs, Navigate Back) name the new session.
+    private func tabMoved(on server: ServerConnection, _ m: TabMoves.Move) {
+        palette.pool?.moved(server: server.id, blocks: m.blocks, from: m.from, to: m.to)
+        let old = Selection(serverID: server.id, sessionID: m.from, windowID: m.window)
+        let new = Selection(serverID: server.id, sessionID: m.to, windowID: m.window)
+        navHistory.moved(window: m.window, server: server.id, from: m.from, to: m.to)
+        if recentTabs.contains(old) {
+            recentTabs = TabHistory.moved(old, to: new, in: recentTabs)
+            if !Self.isTestLaunch { prefs.recentTabs = recentTabs }
+        }
+        if selection == old {
+            selection = new
+        } else if !Self.isTestLaunch, prefs.lastSelection == old {
+            prefs.lastSelection = new
+        }
+    }
+
+    private func tabMoving(on server: ServerConnection, _ moving: TabMoves.Moving) {
+        switch moving {
+        case .began(let blocks): palette.pool?.moving(server: server.id, blocks: blocks)
+        case .failed(let blocks): palette.pool?.moveFailed(server: server.id, blocks: blocks)
+        }
+    }
+
     /// The phone's own Close Tab on the tab on screen: once the server has closed it, the next tab
     /// shows without waiting for the session's view to be read again.
     func closedTab(_ sel: Selection) {
@@ -1144,6 +1195,14 @@ final class AppModel {
     @discardableResult
     func openPane(_ s: ServerConnection, session sid: String, window wid: String?, block bid: String?) -> Bool {
         startNow(s.id)
+        // A place named before its tab moved to another session (a notification, a widget, a
+        // recent): the tab and its panes keep their IDs, so the session that holds them now.
+        var sid = sid
+        let here = s.views[sid]
+        if wid.flatMap({ here?.window($0) }) == nil, bid.flatMap({ here?.windowContaining(block: $0) }) == nil,
+           let moved = wid.flatMap({ s.session(holdingWindow: $0) }) ?? bid.flatMap({ s.session(holding: $0) }) {
+            sid = moved
+        }
         guard let v = s.views[sid] else { return false }
         let w = v.window(wid) ?? bid.flatMap { v.windowContaining(block: $0) } ?? (wid == nil && bid == nil ? v.activeWindow : nil)
         guard let w else { return false }
@@ -1330,9 +1389,11 @@ final class AppModel {
             .contains { $0.block == link.block && $0.session == link.session } ?? false
         while true {
             let server = servers.first { $0.id.uuidString == link.server }
-            let view = server?.views[link.session]
+            // The session that holds the pane now: its tab may have moved since the snapshot.
+            let session = server.flatMap { $0.session(holding: link.block) } ?? link.session
+            let view = server?.views[session]
             let loaded = server.map { s in
-                Self.mayOpen(session: link.session, on: s) && view?.windowContaining(block: link.block) != nil
+                Self.mayOpen(session: session, on: s) && view?.windowContaining(block: link.block) != nil
             } ?? false
             let step = wait.step(OpenPaneLink.World(serverKnown: server != nil, loaded: loaded, inSnapshot: listed),
                                  now: clock.now(), selection: selection, autoSelected: autoSelects > landings ? autoSelected : nil)
@@ -1342,7 +1403,7 @@ final class AppModel {
                 if Task.isCancelled { return .nothing(.replaced) }
             case .open:
                 // The tab that holds the pane now, whatever tab the link named.
-                guard let server, openPane(server, session: link.session, window: nil, block: link.block) else {
+                guard let server, openPane(server, session: session, window: nil, block: link.block) else {
                     return .nothing(.unknownPane)
                 }
                 return step

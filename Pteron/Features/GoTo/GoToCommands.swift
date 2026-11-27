@@ -334,6 +334,7 @@ enum GoToCommands {
             case .find: return block?.isTerminal == true && findOpen
             case .goToTab(let n): return n == -1 ? tabs.count > 1 : n >= 1 && n <= tabs.count
             case .closePane, .splitRight, .splitDown, .splitLeft, .splitUp, .clear: return block != nil
+            case .moveTabToSession: return !server.moveDestinations(from: t.sessionID).isEmpty
             case .balanceSplits, .closeOtherPanes, .moveToTab, .moveToNewTab, .moveTab, .minimizeFloat, .minimizeAllFloats:
                 guard let b = t.blockID else { return false }
                 let pc: PaneCommand = switch c {
@@ -394,7 +395,7 @@ enum GoToCommands {
         case .navigateForward: "chevron.forward"
         case .balanceSplits: "rectangle.split.3x1"
         case .closeOtherPanes: "xmark.square"
-        case .moveToTab, .moveToNewTab: "rectangle.portrait.and.arrow.right"
+        case .moveToTab, .moveToNewTab, .moveTabToSession: "rectangle.portrait.and.arrow.right"
         case .minimizeFloat, .minimizeAllFloats: "minus.square"
         case .fontBigger, .fontSmaller, .fontReset: "textformat.size"
         default: "command"

@@ -23,6 +23,11 @@ struct TabChip: Identifiable, Equatable {
     /// What a chip's menu offers.
     enum Action: Hashable, CaseIterable {
         case rename, close, closeOthers, moveLeft, moveRight
+        /// Move to Session's row for that session (`moves`).
+        case moveToSession(String)
+
+        /// The menu's own rows; Move to Session's are the chip's `moves`.
+        static var allCases: [Action] { [.rename, .close, .closeOthers, .moveLeft, .moveRight] }
 
         var title: String {
             switch self {
@@ -31,6 +36,7 @@ struct TabChip: Identifiable, Equatable {
             case .closeOthers: "Close Other Tabs"
             case .moveLeft: "Move Tab Backward"
             case .moveRight: "Move Tab Forward"
+            case .moveToSession: MoveToSessionMenu.title
             }
         }
 
@@ -41,6 +47,7 @@ struct TabChip: Identifiable, Equatable {
             case .closeOthers: "xmark.square"
             case .moveLeft: "arrow.left"
             case .moveRight: "arrow.right"
+            case .moveToSession: MoveToSessionMenu.symbol
             }
         }
 
@@ -71,6 +78,9 @@ struct TabChip: Identifiable, Equatable {
     /// The tab can move among the session's tabs (the server has `session.move_window`): the
     /// menu's Move rows, and a drag.
     var movable: Bool
+    /// The sessions of the computer the tab can move to, in sidebar order: Move to Session's
+    /// submenu. Empty where the computer can't move tabs between sessions.
+    var moves: [SessionChoice]
 
     /// - Parameters:
     ///   - panes: every pane's agent, in the tab's order; nil for a shell.
@@ -84,7 +94,7 @@ struct TabChip: Identifiable, Equatable {
     ///   - strip: the strip's layout, for the close button.
     init(id: String, title: String, active: Bool, position: Int, count: Int, panes: [AgentKind?],
          paneIDs: [String] = [], front: String? = nil, status: String?, progress: [TermProgress] = [], waking: Bool = false, movable: Bool = false,
-         strip: StripLayout? = nil) {
+         moves: [SessionChoice] = [], strip: StripLayout? = nil) {
         self.id = id
         self.title = title
         self.active = active
@@ -99,6 +109,7 @@ struct TabChip: Identifiable, Equatable {
         self.waking = active && waking
         showsClose = active && (strip?.showsClose ?? false)
         self.movable = movable && count > 1
+        self.moves = moves
     }
 
     /// The icons a chip stacks, front first: the `front` pane's, then the panes after it in the
@@ -142,6 +153,19 @@ struct TabChip: Identifiable, Equatable {
         return a
     }
 
+    /// One of VoiceOver's actions on the chip.
+    struct SpokenAction: Identifiable {
+        var action: Action
+        var title: String
+        var id: Action { action }
+    }
+
+    /// VoiceOver's actions: the menu's rows, then a Move to Session row for each session.
+    var spokenActions: [SpokenAction] {
+        menu.map { SpokenAction(action: $0, title: $0.title) }
+            + moves.map { SpokenAction(action: .moveToSession($0.id), title: "Move to \($0.name)") }
+    }
+
     /// What VoiceOver reads: "build, tab 2 of 5, Working".
     var spoken: String {
         var parts = [title, "tab \(position) of \(count)"]
@@ -166,8 +190,9 @@ extension TabChip {
     ///   - position: the tab's place among the session's tabs as the strip orders them, from 1.
     ///   - block: the pane on screen, for the active chip's status.
     @MainActor
+    ///   - session: the tab's session, for Move to Session; nil leaves the submenu out.
     static func of(_ window: WindowInfo, position: Int, count: Int, server: ServerConnection, active: Bool,
-                   block: String?, strip: StripLayout?) -> TabChip {
+                   block: String?, strip: StripLayout?, session: String? = nil) -> TabChip {
         let status = active ? block.flatMap { server.meta[$0]?.topStatus?.state } : server.windowStatus(window)?.state
         let blocks = window.allBlocks
         return TabChip(id: window.id, title: WindowTitle.of(window, server: server), active: active,
@@ -177,6 +202,7 @@ extension TabChip {
                        status: status, progress: active ? [] : bars(window, server, status),
                        waking: server.waking,
                        movable: PaneArrange.isAvailable(.moveTab, target: nil, support: server.capabilities.paneSupport),
+                       moves: session.map { SessionChoice.destinations(server, from: $0) } ?? [],
                        strip: strip)
     }
 

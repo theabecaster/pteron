@@ -225,6 +225,13 @@ final class GoToCenter {
     /// Runs the row `id`: goes there, or runs the command. A dimmed row does nothing.
     func run(_ id: GoToItemID) {
         guard let s = model.goTo else { return }
+        // Move Tab to Session…: the session picked takes the target tab.
+        if case .moveTab(let srv, let from) = s.scope {
+            guard case .session(srv, let dest) = id, let t = s.target, let server = model.server(srv) else { return }
+            close()
+            model.moveTab(server, session: from, window: t.windowID, to: dest)
+            return
+        }
         guard let run = s.runs[id] ?? s.typedRuns[id] ?? GoToRun.place(for: id, in: model) else {
             // A session that closed since the copy.
             remember(nil, removing: id)
@@ -252,6 +259,13 @@ final class GoToCenter {
             } else {
                 model.openRequest = OpenRequest(selection: sel)
             }
+        case .command(.moveTabToSession) where s.target != nil:
+            // The palette turns into the session chooser in place, with an empty field.
+            remember(id)
+            guard let t = s.target, let server = model.server(t.serverID),
+                  !server.moveDestinations(from: t.sessionID).isEmpty else { return }
+            s.switchScope(.moveTab(server: t.serverID, from: t.sessionID))
+            s.clear()
         case .command(let c):
             remember(id)
             close()

@@ -73,7 +73,7 @@ enum PathRecents {
 @MainActor
 final class PaneFiles {
     let server: ServerConnection
-    let sessionID: String
+    var sessionID: String
     let blockID: String
     /// The pane's view: pickers, the browser and questions show over it.
     weak var view: UIView?

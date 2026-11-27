@@ -150,9 +150,9 @@ private struct TabChips: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: StripLayout.gap) {
                         ForEach(Array(windows.enumerated()), id: \.element.id) { n, w in
-                            TabChipSlot(server: target.server, window: w, position: n + 1, count: windows.count,
-                                        active: w.id == target.windowID, block: target.block, layout: layout, room: room,
-                                        theme: theme, actions: actions)
+                            TabChipSlot(server: target.server, sessionID: target.sessionID, window: w, position: n + 1,
+                                        count: windows.count, active: w.id == target.windowID, block: target.block,
+                                        layout: layout, room: room, theme: theme, actions: actions)
                                 .id(w.id)
                                 // In the row's own space, so a scroll changes nothing here.
                                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(ChipFrames.space)) } action: { [frames] in
@@ -306,6 +306,7 @@ struct SessionPopoverHost: View {
 /// tab draws only that chip again.
 private struct TabChipSlot: View {
     let server: ServerConnection
+    let sessionID: String
     let window: WindowInfo
     let position: Int
     let count: Int
@@ -322,7 +323,7 @@ private struct TabChipSlot: View {
         let _ = RenderCount.bump(.tabChips)
         #endif
         let chip = TabChip.of(window, position: position, count: count, server: server, active: active, block: block,
-                              strip: layout)
+                              strip: layout, session: sessionID)
         let width = active ? layout.activeChip(room: room) : layout.chip(room: room)
         TabChipView(chip: chip, theme: theme, onTap: { actions.pick(chip.id) }, onAction: { actions.chip($0, chip.id) })
             .frame(minWidth: width.lowerBound, maxWidth: width.upperBound, maxHeight: .infinity)

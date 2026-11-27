@@ -71,23 +71,36 @@ struct PaneHostView: UIViewRepresentable {
         let host = TerminalHost(stream: stream, sizing: p.sizing, fontSize: p.fontSize, theme: prefs.theme(for: scheme))
         host.keymap = server.keymap
         // Read when the pane checks its fit (`TerminalHost.checkFit`), never per frame.
-        host.blockOwner = { [weak server, sessionID, blockID] in
-            server?.views[sessionID]?.windowContaining(block: blockID)?.block(blockID)?.owner
+        // Through the session the stream goes through now: a tab can move to another session.
+        host.blockOwner = { [weak server, weak stream, blockID] in
+            guard let stream else { return nil }
+            return server?.views[stream.sessionID]?.windowContaining(block: blockID)?.block(blockID)?.owner
         }
         // The connection log's lines about this pane go the way the connection's own notes do.
         host.note = { [weak server] in server?.control.onNote?($0) }
-        // For as long as the host lives: a parked pane still hears who has it.
-        server.ownerChanges.observe(block: blockID) { [weak host] change in
-            guard let host else { return false }
-            host.ownerChanged(change)
-            return true
+        // For as long as the host lives: a parked pane still hears who has it. Again after its
+        // tab moved (`TerminalHost.moved(to:)`): one observer for the pane, never two.
+        let observe: @MainActor (TerminalHost) -> Void = { [weak server, blockID] host in
+            guard let server else { return }
+            server.ownerChanges.observe(block: blockID) { [weak host] change in
+                guard let host else { return false }
+                host.ownerChanged(change)
+                return true
+            }
+            // The keyboard's aids follow the program in front (`TypingAids`), told only when they change.
+            host.term.wantTypingAids(TypingAids.for(server.currentMeta(blockID)))
+            server.typingAids.observe(block: blockID) { [weak host] aids in
+                guard let host else { return false }
+                host.term.wantTypingAids(aids)
+                return true
+            }
         }
-        // The keyboard's aids follow the program in front (`TypingAids`), told only when they change.
-        host.term.wantTypingAids(TypingAids.for(server.currentMeta(blockID)))
-        server.typingAids.observe(block: blockID) { [weak host] aids in
-            guard let host else { return false }
-            host.term.wantTypingAids(aids)
-            return true
+        observe(host)
+        host.reobserve = { [weak server, weak host, blockID] in
+            guard let server, let host else { return }
+            server.ownerChanges.forget(block: blockID)
+            server.typingAids.forget(block: blockID)
+            observe(host)
         }
         // Read for each key while predicted echo is on (a slow link), never otherwise.
         host.echoContext = { [weak server, blockID] in
@@ -174,7 +187,8 @@ struct PaneHostView: UIViewRepresentable {
     /// one took the host; neither may take the host from the container on screen.
     final class Container: UIView {
         let host: TerminalHost
-        let key: TerminalHostPool.Key
+        /// The pane's key in the pool; a new session's when the pane's tab moves (`TerminalHostPool.moved`).
+        var key: TerminalHostPool.Key
         weak var pool: TerminalHostPool?
 
         init(_ host: TerminalHost, key: TerminalHostPool.Key, pool: TerminalHostPool?) {
@@ -303,6 +317,45 @@ final class TerminalHostPool {
         for (key, host) in hosts where key.server == server && host.paneClosed {
             guard !live(key).contains(where: { $0.window != nil }) else { continue }
             host.evict()
+        }
+    }
+
+    // MARK: A tab that moves to another session
+
+    /// This iPhone is moving a tab whose panes are `blocks`: their streams wait for the move's end.
+    func moving(server: UUID, blocks: [String]) {
+        for (key, host) in hosts where key.server == server && blocks.contains(key.block) { host.moving() }
+    }
+
+    /// The move failed: the panes stay where they were.
+    func moveFailed(server: UUID, blocks: [String]) {
+        for (key, host) in hosts where key.server == server && blocks.contains(key.block) { host.moveFailed() }
+    }
+
+    /// A tab moved from session `from` to `to`, by this iPhone or another client. Each of its
+    /// panes keeps its host, screen, history, place in the parked and warm lists and compose
+    /// draft under the new session's key, so the tab shows in its new session with the same
+    /// terminals, and its stream opens again through the new session once
+    /// (`TerminalHost.moved(to:)`).
+    func moved(server: UUID, blocks: [String], from: String, to: String) {
+        for b in blocks {
+            let old = Key(server: server, session: from, block: b), new = Key(server: server, session: to, block: b)
+            composeSlots.rekey(old, to: new)
+            if let o = owed, o.key == old { owed = (new, o.quiet, o.until) }
+            guard let host = hosts.removeValue(forKey: old) else { continue }
+            // A host the new key already has (none, unless a view of the destination showed the
+            // pane before this) gives way to the one with the screen.
+            if let other = hosts[new], other !== host { other.evict() }
+            let boxes = containers.removeValue(forKey: old) ?? []
+            for w in boxes { w.c?.key = new }
+            containers[new, default: []].append(contentsOf: boxes)
+            parked = parked.map { $0 == old ? new : $0 }
+            warm = warm.map { $0 == old ? new : $0 }
+            // Its callbacks name its key: added again under the new one, which also hands the
+            // vertical bar's Hide Keyboard to the new key.
+            hideKeyboard.set(old, shown: false)
+            add(host, for: new)
+            host.moved(to: to)
         }
     }
 

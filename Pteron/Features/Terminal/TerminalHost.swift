@@ -381,6 +381,9 @@ final class TerminalHost: UIView, TerminalSink, TerminalEngineDelegate, UIScroll
     /// Writes a line about this pane's computer into the connection log (`ownerChanged`,
     /// `resizedElsewhere`). Nil where there is no log.
     var note: ((ConnectionEvent) -> Void)?
+    /// Hears the computer's owner and typing-aid news for this pane again, as at the start: a
+    /// tab that another client moved closed the pane's news here first (`moved(to:)`).
+    var reobserve: (() -> Void)?
 
     // Predicted echo (Predict/TerminalHost+Predict.swift).
     /// Whether an agent runs in the pane, and the program in front, as the server's metadata

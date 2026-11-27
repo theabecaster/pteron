@@ -312,6 +312,33 @@ return has caught up (`AwayFrame`, `GhosttyTerminalView.holdWhileAway`).
 - Nothing more is sent: the hand-back, the one claim on the return and its resize are as before.
 - A pane that parks, warms, stops or leaves the screen drops it.
 
+## A tab that moves
+
+A tab moved to another session of its computer (docs/sidebar.md, Move to Session) keeps its
+panes' hosts: the same terminals, screens, history, scroll positions and compose drafts, now
+under the new session (`TerminalHostPool.moved`). Only the session the stream and the pane's
+calls go through changes.
+
+- **Before the move** (the phone's own), each pane's stream is told (`TerminalStream.expectMove`):
+  the server ends the streams opened through the session the tab leaves, and that end, whatever
+  its close code, then neither ends the stream ("This pane closed.") nor resumes it. The fence
+  goes up and the screen stays.
+- **After it** (`TerminalStream.moved(to:)`), a stream on screen or warm starts afresh through
+  the new session: one ticket, one HELLO, one snapshot. A RESUME of the old stream could only be
+  refused. The old screen stays until the new snapshot under the catch-up hold, so nothing blanks
+  ([ghostty-engine.md](ghostty-engine.md), The catch-up hold), and the fence comes down by its
+  usual rules. A parked stream starts so when it is shown again.
+- **Input.** Keys typed meanwhile are held by the fence and dropped with its notice when the new
+  snapshot arrives, as for any fresh start; queued input named the old session and is dropped.
+  A request that had left is never sent again.
+- **Fit.** The claim stays: the pane's size is the same, so the fresh stream's size report needs
+  no resize. The pane's files, sharing and ports go through the new session.
+- **A failed move** (`moveFailed()`) leaves the stream where it was; an end that came meanwhile
+  goes on as any drop does (a RESUME, or a fresh start).
+- **Another client's move** ends the streams first: the pane says "This pane closed." until the
+  move is seen in the views, then starts afresh the same way, and hears its owner and typing-aid
+  news again (`TerminalHost.moved(to:)`).
+
 ## Parking
 
 A pane that leaves the screen (a pane or tab switch) parks instead of stopping, so coming back

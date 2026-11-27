@@ -57,6 +57,20 @@ struct NavHistory {
         return p
     }
 
+    /// A tab moved to another session: its places name the new one, so Back and Forward still
+    /// find them.
+    mutating func moved(window: String, server: UUID, from: String, to: String) {
+        func fix(_ p: NavPlace) -> NavPlace {
+            guard p.serverID == server, p.windowID == window, p.sessionID == from else { return p }
+            var q = p
+            q.sessionID = to
+            return q
+        }
+        current = current.map(fix)
+        older = older.map(fix)
+        newer = newer.map(fix)
+    }
+
     func canGoBack(where open: (NavPlace) -> Bool) -> Bool { older.contains { $0 != current && open($0) } }
     func canGoForward(where open: (NavPlace) -> Bool) -> Bool { newer.contains { $0 != current && open($0) } }
 

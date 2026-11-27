@@ -389,7 +389,9 @@ public final class TerminalStream {
     /// `control`, or a fake in tests. Everything the stream does on the control connection goes
     /// through here.
     private let link: any StreamLink
-    public let sessionID: String
+    /// The session the stream is opened through. It changes only when the pane's tab moves to
+    /// another session (`moved(to:)`).
+    public private(set) var sessionID: String
     public let blockID: String
     public weak var sink: TerminalSink?
     /// Called when a key-bound server action fails, or when typed input was dropped because the
@@ -435,6 +437,11 @@ public final class TerminalStream {
     private var stopped = false
     /// Parked (`park()`): stopped, with what a RESUME needs kept.
     public private(set) var isParked = false
+    /// The pane's tab is moving to another session (`expectMove()`): a drop of the data socket
+    /// waits for the move's end instead of ending the stream or resuming it.
+    public private(set) var isMoving = false
+    /// The close code of a drop that came while moving, for `moveFailed()` to go on from.
+    private var dropWhileMoving: Int?
     /// True from a WELCOME until the socket drops or the stream is stopped or restarted.
     private var live = false
     /// The data socket is up and has been welcomed: what the stream last said of the pane (its
@@ -742,6 +749,8 @@ public final class TerminalStream {
     public func stop() {
         stopped = true
         isParked = false
+        isMoving = false
+        dropWhileMoving = nil
         gen += 1
         endAttachWait()
         live = false
@@ -843,6 +852,44 @@ public final class TerminalStream {
         wakeReader()
         stopped = false
         Task { await self.fullStart() }
+    }
+
+    // MARK: Moving to another session (docs/terminal.md, A tab that moves)
+
+    /// The pane's tab is about to move to another session (`session.transfer_window`). The
+    /// server ends the streams opened through the session it leaves, so from now until
+    /// `moved(to:)` or `moveFailed()` a drop of the data socket neither ends the stream nor
+    /// resumes it: the fence goes up and the screen stays.
+    public func expectMove() {
+        guard !stopped else { return }
+        isMoving = true
+    }
+
+    /// The pane's tab is in `session` now. Its stream through the old session is over (the
+    /// server ended it, or will), so a RESUME could only be refused: a running stream starts
+    /// afresh through the new session, and the screen stays until the new snapshot, behind the
+    /// fence (`restart()`). A parked stream starts so when it is shown again. Queued input named
+    /// the old session and is dropped: input is never sent anywhere but where it was typed.
+    public func moved(to session: String) {
+        isMoving = false
+        dropWhileMoving = nil
+        guard session != sessionID else { return }
+        sessionID = session
+        token = nil
+        dropInput()
+        guard !stopped else { return }
+        restart()
+    }
+
+    /// The move didn't happen: the stream stays where it was, and a drop that came meanwhile
+    /// goes on as any drop does.
+    public func moveFailed() {
+        guard isMoving else { return }
+        isMoving = false
+        guard let code = dropWhileMoving else { return }
+        dropWhileMoving = nil
+        guard !stopped else { return }
+        afterDrop(code: code, gen: gen)
     }
 
     /// How long `wake()` waits for the data socket to answer a ping before it drops it, when
@@ -1767,6 +1814,20 @@ public final class TerminalStream {
         live = false
         if ws === socket { ws = nil }
         let code = socket.closeCode
+        // The server ends a moving tab's streams through the session it leaves: the move's end
+        // says what comes next (`moved(to:)`, `moveFailed()`). The screen stays, behind the fence.
+        if isMoving {
+            fence.raise(exact: hasScreen)
+            droppedAt = .now
+            dropWhileMoving = code
+            return
+        }
+        afterDrop(code: code, gen: myGen)
+    }
+
+    /// What a drop of the data socket leads to: the end of a closed pane, else a RESUME or a
+    /// fresh start.
+    private func afterDrop(code: Int, gen myGen: Int) {
         if code == 4000 {
             token = nil
             // Keys held for a pane that is gone are dropped, and say so.

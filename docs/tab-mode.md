@@ -71,8 +71,11 @@ A chip shows up to three pane icons, the tab's title and its status (`TabChip`, 
 - Any other chip shows its tab's status as its sidebar row does, and cuts its title at 120 pt.
 - A tap shows the tab. The row scrolls to keep the tab on screen in view, also when a swipe on
   the terminal goes on to another tab ([terminal.md](terminal.md), Gestures).
-- Touch and hold: Rename Tab…, Move Tab Backward, Move Tab Forward, Close Tab, Close Other
-  Tabs. They run what the sidebar's tab rows run (`StripRoutes`). A tab with an agent, or with
+- Touch and hold: Rename Tab…, Move Tab Backward, Move Tab Forward, Move to Session (a submenu
+  of the computer's other sessions, in sidebar order, on a computer at revision 22 or later;
+  [sidebar.md](sidebar.md), Move to Session), Close Tab, Close Other Tabs. They run what the
+  sidebar's tab rows run (`StripRoutes`). VoiceOver's actions on a chip add "Move to ops" for
+  each session (`TabChip.spokenActions`). A tab with an agent, or with
   two panes or more, asks before it closes; Close Other Tabs always asks.
 - A question shows from the control that was tapped, never from the bottom of the screen:
   Close Tab at the chip's close button (at the chip, from its menu), Close Other Tabs at the
@@ -125,6 +128,7 @@ tall enough.
 | Go to Anything | title menu, ⌘P | popover's row, ⌘P |
 | Rename and Close Session | sidebar row's menu | popover row's menu |
 | Reorder sessions | drag in the sidebar | sidebar mode only |
+| Move a tab to another session | tab row's menu, drag onto the session | chip's menu; Move Tab to Session… |
 
 - Show/Hide Sidebar does nothing in tab mode and isn't in the palette. The swipe from the left
   edge is off. The board's "+K more" opens the Agents sheet.

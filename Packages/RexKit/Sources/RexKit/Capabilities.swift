@@ -12,7 +12,7 @@ public enum RexAPI {
         // (docs/rex-protocol.md, Focus history); listed so that a call is never sent below 19.
         "focus_history.reverse": 19,
         "client.undo_close": 20,
-        // Not used: the sidebar moves tabs only within their session (docs/rex-protocol.md).
+        // Move to Session: a tab to another session, its programs running (docs/rex-protocol.md).
         "session.transfer_window": 22,
     ]
 

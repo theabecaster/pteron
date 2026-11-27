@@ -167,6 +167,9 @@ final class ServerConnection: Identifiable {
         didSet {
             agentsMayHaveChanged()
             if !pendingOrder.tabs.isEmpty { releaseTabHolds() }
+            // A tab that moved to another session is followed before anything takes it for closed.
+            noteTabMoves(from: oldValue)
+            if !transfers.isEmpty { releaseTransfers() }
             viewsChanged?(self, oldValue)
         }
     }
@@ -312,6 +315,20 @@ final class ServerConnection: Identifiable {
     @ObservationIgnored var sessionMoveTask: Task<Void, Never>?
     /// Counts the drags whose order is held, so only the newest one's answer sets the release.
     @ObservationIgnored var nextOrderToken = 0
+    /// The tabs this iPhone is moving to another session, by tab, until both sessions' views
+    /// show the move (`TabTransfer`). Applied wherever a view lands (`TabTransfer.reconcile`).
+    @ObservationIgnored var transfers: [String: TabTransfer] = [:]
+    /// The panes of those tabs: the `block_closed` the session they leave sends for each is no
+    /// close, so what the app keeps for a pane stays.
+    @ObservationIgnored var transferring: Set<String> = []
+    /// Tabs that left every view lately, with the session they left, so a tab that shows up in
+    /// another session a moment later is known to have moved there (`TabMoves`).
+    @ObservationIgnored var departedTabs: [String: (session: String, at: Date)] = [:]
+    /// A tab moved to another session of this computer, by this iPhone or any other client. Told
+    /// in the turn the views show it, before `viewsChanged`. Set by `AppModel`.
+    @ObservationIgnored var tabMoved: (@MainActor (ServerConnection, TabMoves.Move) -> Void)?
+    /// This iPhone's move of a tab began or failed, with the tab's panes. Set by `AppModel`.
+    @ObservationIgnored var tabMoving: (@MainActor (ServerConnection, TabMoves.Moving) -> Void)?
     // Coalescing and status hold.
     @ObservationIgnored var pendingMeta: [String: BlockMeta] = [:]
     @ObservationIgnored var statusShownAt: [String: Date] = [:]
@@ -499,6 +516,8 @@ final class ServerConnection: Identifiable {
                                    serverRevision: control.serverRevision, features: control.features)
             // The bootstrap's lists win over a drag's order from before.
             if !pendingOrder.isEmpty { pendingOrder = PendingOrder() }
+            // Likewise a move's hold: the new connection's views say where the tab is.
+            if !transfers.isEmpty { dropTransfers() }
             panesSupportChanged()
             prompts.onConnected?(connectionSerial)
             #if DEBUG
@@ -899,7 +918,7 @@ final class ServerConnection: Identifiable {
             }
             // Replace, don't merge. Sessions changed by events during the sync get one more read.
             sessions = list.map { e in SessionEntry(id: e.id, label: fresh[e.id]?.label ?? e.label) }
-            views = fresh
+            views = transfers.isEmpty ? fresh : TabTransfer.reconcile(fresh, Array(transfers.values))
             let live = Set(fresh.values.flatMap { $0.windows.flatMap(\.allBlocks).map(\.id) })
             paneNames.removeAll { !live.contains($0) }
             // A sync means events may have been missed, a bar's removal among them: bars with
@@ -996,7 +1015,14 @@ final class ServerConnection: Identifiable {
         guard !hiddenSessions().contains(view.sessionID) else { return }
         let old = views[view.sessionID]
         if let old, old.revision > view.revision { return }
-        views[view.sessionID] = view
+        if transfers.isEmpty {
+            views[view.sessionID] = view
+        } else {
+            // A tab on its way to another session is in exactly one of them at every moment.
+            var next = views
+            next[view.sessionID] = view
+            views = TabTransfer.reconcile(next, Array(transfers.values))
+        }
         createdBlocksShown(view, old: old)
         if let i = sessions.firstIndex(where: { $0.id == view.sessionID }) {
             if sessions[i].label != view.label { sessions[i].label = view.label }

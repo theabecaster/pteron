@@ -148,8 +148,13 @@ import Testing
         try list(st, server: s, session: "s1", window: "w1", block: "b1")
         let clock = FakeClock()
         #expect(await m.openPane(link: link(s, block: "b404"), clock: clock.clock) == .nothing(.unknownPane))
-        #expect(await m.openPane(link: link(s, session: "s404", block: "b1"), clock: clock.clock) == .nothing(.unknownPane))
         #expect(m.openRequest == nil && clock.sleeps == 0)
+        // A link that names another session for a pane the app has loaded is one written before
+        // the pane's tab moved to another session (Move to Session): the pane keeps its ID, so
+        // it opens where it is now.
+        #expect(await m.openPane(link: link(s, session: "s404", block: "b1"), clock: clock.clock) == .open)
+        #expect(m.openRequest?.selection == Selection(serverID: s.id, sessionID: "s1", windowID: "w1"))
+        #expect(clock.sleeps == 0)
         // Without a snapshot at all (the writer is off), only loaded panes open.
         let plain = try model()
         let p = server(plain, "desk")

@@ -27,5 +27,11 @@ final class ComposeSlots {
         slots = slots.filter { !gone($0.key) }
     }
 
+    /// A pane's tab moved to another session: its slot, and the draft in it, go along.
+    func rekey(_ old: TerminalHostPool.Key, to new: TerminalHostPool.Key) {
+        guard let s = slots.removeValue(forKey: old) else { return }
+        slots[new] = s
+    }
+
     var count: Int { slots.count }
 }

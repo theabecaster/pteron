@@ -134,12 +134,14 @@ struct SessionsList: View {
             if let entry = server.sessions.first(where: { $0.id == sid }) {
                 let target = SidebarActions.Target(server: server, sessionID: sid, label: entry.label)
                 let canDrag = !dim && PaneArrange.isAvailable(.moveSession, target: nil, support: support)
+                // A tab can drop under this header, into this session, where the computer moves tabs.
+                let records = canDrag || (!dim && support.has(.transferTab))
                 SessionRow(server: server, session: entry, windows: server.views[sid]?.windows ?? [],
                            collapsed: collapsed.contains(SidebarCollapse.session(id, sid)),
                            topGap: server.orderedSessions.first?.id == sid ? 0 : sessionGap, dim: dim,
                            canDrag: canDrag, theme: theme, actions: actions)
                     .equatable()
-                    .modifier(SidebarDragRow(drag: actions.drag, id: row.id, kind: row.kind, enabled: canDrag) { d in
+                    .modifier(SidebarDragRow(drag: actions.drag, id: row.id, kind: row.kind, enabled: records, steps: canDrag) { d in
                         step(.session(server: id, session: sid), by: d)
                     })
                     .modifier(SidebarStackRow(theme: theme))
@@ -158,12 +160,13 @@ struct SessionsList: View {
             if let w = server.views[sid]?.window(wid) {
                 let selected = selection == Selection(serverID: server.id, sessionID: sid, windowID: wid)
                 let target = SidebarActions.Target(server: server, sessionID: sid, windowID: wid, label: w.label)
-                let canDrag = !dim && PaneArrange.isAvailable(.moveTab, target: nil, support: support)
+                let canDrag = !dim && (support.has(.moveTab) || support.has(.transferTab))
                 TabRow(server: server, sessionID: sid, window: w, selected: selected, dim: dim,
                        retries: dim && selection?.serverID != server.id, canDrag: canDrag,
                        theme: theme, actions: actions)
                     .equatable()
-                    .modifier(SidebarDragRow(drag: actions.drag, id: row.id, kind: row.kind, enabled: canDrag) { d in
+                    .modifier(SidebarDragRow(drag: actions.drag, id: row.id, kind: row.kind, enabled: canDrag,
+                                             steps: support.has(.moveTab)) { d in
                         step(.tab(server: server.id, session: sid, window: wid), by: d)
                     })
                     .modifier(SidebarStackRow(theme: theme, selected: selected, selectionLeading: SidebarMetrics.tabLeading))
@@ -187,12 +190,26 @@ struct SessionsList: View {
     /// The order a drop is measured against: what the sidebar shows now.
     private func orders(_ servers: [UUID: ServerConnection]) -> SidebarDrag.Orders {
         SidebarDrag.Orders(sessions: { servers[$0]?.orderedSessions.map(\.id) ?? [] },
-                           tabs: { servers[$0]?.orderedWindowIDs($1) ?? [] })
+                           tabs: { servers[$0]?.orderedWindowIDs($1) ?? [] },
+                           transfers: { servers[$0]?.movesTabs ?? false })
     }
 
     /// A drop: the row goes to the gap, worked out again from ids now. A row that is gone bumps.
-    private func dropped(_ item: SidebarDrag.Item, _ gap: Int) {
-        move(item) { ids, id in TabOrder.before(ids, moving: id, gap: gap) }
+    /// A tab dropped among another session's tabs moves there, before the tab under the gap.
+    private func dropped(_ item: SidebarDrag.Item, _ gap: SidebarDrag.Gap) {
+        if case .tab(let srv, let sid, let wid) = item, let dest = gap.session, dest != sid {
+            guard let s = model.servers.first(where: { $0.id == srv }) else { Haptic.bump(); return }
+            let ids = s.orderedWindowIDs(dest)
+            let before = gap.index < ids.count ? ids[gap.index] : nil
+            // The drop ticked already; the tab changes sessions once the computer has moved it.
+            model.moveTab(s, session: sid, window: wid, to: dest, before: before, haptic: false)
+            return
+        }
+        if case .tab(let srv, _, _) = item, model.server(srv)?.capabilities.paneSupport.has(.moveTab) != true {
+            Haptic.bump()
+            return
+        }
+        move(item) { ids, id in TabOrder.before(ids, moving: id, gap: gap.index) }
     }
 
     /// VoiceOver's Move Up and Move Down: one place.
@@ -602,6 +619,7 @@ struct TabRow: View, Equatable {
         .contextMenu {
             Button(action: rename) { Label("Rename Tab…", systemImage: "pencil") }
             Button { Task { await server.newWindow(sid) } } label: { Label("New Tab", systemImage: "plus.square") }
+            TabRowMoveMenu(server: server, sessionID: sid, windowID: w.id)
             Button(role: .destructive, action: close) { Label("Close Tab", systemImage: "xmark") }
         }
         .modifier(SidebarLift(enabled: canDrag) { actions.drag.lift(.tab(server: server.id, session: sid, window: w.id)) })
@@ -724,6 +742,8 @@ struct SidebarDragRow: ViewModifier {
     let id: String
     let kind: SidebarOutline.Row.Kind
     let enabled: Bool
+    /// VoiceOver's Move Up and Move Down, one place within the order: where the row itself moves.
+    var steps = true
     let step: (Int) -> Void
 
     func body(content: Content) -> some View {
@@ -733,6 +753,21 @@ struct SidebarDragRow: ViewModifier {
                     drag.record(id, kind, f)
                 }
                 .onDisappear { drag.forget(id) }
+                .modifier(SidebarStepActions(enabled: steps, step: step))
+        } else {
+            content
+        }
+    }
+}
+
+/// Move Up and Move Down for VoiceOver, where a row moves within its list.
+struct SidebarStepActions: ViewModifier {
+    let enabled: Bool
+    let step: (Int) -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
                 .accessibilityAction(named: "Move Up") { step(-1) }
                 .accessibilityAction(named: "Move Down") { step(1) }
         } else {

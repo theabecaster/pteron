@@ -48,11 +48,7 @@ actor GoToSearcher {
         guard !words.isEmpty else { return [] }
         var scored: [GoToRanker.Scored] = []
         for (i, item) in items.enumerated() {
-            switch scope {
-            case .sessions where item.kind != .session: continue
-            case .commands where item.kind != .command: continue
-            default: break
-            }
+            guard scope.lists(item) else { continue }
             guard var s = score(i, words: words, raw: raw) else { continue }
             s.score *= GoToRanker.boost(item, recent: boosts[item.id] ?? 0)
             scored.append(s)

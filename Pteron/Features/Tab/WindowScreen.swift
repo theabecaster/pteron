@@ -983,6 +983,10 @@ struct WindowScreen: View {
         case .moveToTab: chooseMoveTarget()
         case .moveToNewTab: moveToNewTab()
         case .moveTab(let d): moveTab(by: d)
+        case .moveTabToSession:
+            // The palette's session chooser for this computer (docs/goto.md, Move Tab to Session).
+            guard !server.moveDestinations(from: sessionID).isEmpty else { Haptic.bump(); return }
+            openGoTo(.moveTab(server: server.id, from: sessionID), w)
         case .minimizeFloat: minimizeFloat()
         case .minimizeAllFloats: minimizeAllFloats()
         case .goTo(let scope): openGoTo(scope, w)

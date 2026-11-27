@@ -418,7 +418,9 @@ final class PanesServerTests: XCTestCase {
         let rig = try await Rig()
         defer { rig.stop() }
         await rig.connect()
-        XCTAssertTrue(PaneCommand.allCases.allSatisfy { rig.server.capabilities.paneSupport.has($0) })
+        // Every command but the one revision 22 added (the rig's server is at 18).
+        XCTAssertTrue(PaneCommand.allCases.filter { $0 != .transferTab }.allSatisfy { rig.server.capabilities.paneSupport.has($0) })
+        XCTAssertFalse(rig.server.capabilities.paneSupport.has(.transferTab))
         XCTAssertEqual(rig.server.keymap.panes, rig.server.capabilities.paneSupport)
         // The fake answers `method_not_found` for anything it wasn't told.
         await rig.server.swapBlocks("session:1", "a", "b")

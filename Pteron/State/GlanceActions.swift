@@ -231,13 +231,19 @@ final class LiveActionChannel: ActionChannel {
     }
 
     func statuses(session: String, block: String) async -> [String: ProgramStatus]? {
-        await ActionCalls.statuses(server.control, session: session, block: block)
+        await ActionCalls.statuses(server.control, session: current(session, block), block: block)
+    }
+
+    /// The session that holds the pane now: a snapshot or a notification names the session of
+    /// when it was written, and the pane's tab may have moved to another since.
+    private func current(_ session: String, _ block: String) -> String {
+        server.session(holding: block) ?? session
     }
 
     func write(_ text: String, session: String, block: String, within limit: TimeInterval,
                mayWrite: @escaping @MainActor () -> Bool) async -> TerminalStream.Delivery {
         guard let stream = server.control.stream(block: block) else {
-            return await ActionCalls.write(server.control, text, session: session, block: block, mayWrite: mayWrite)
+            return await ActionCalls.write(server.control, text, session: current(session, block), block: block, mayWrite: mayWrite)
         }
         guard mayWrite() else { return .unsent }
         return await withCheckedContinuation { done in

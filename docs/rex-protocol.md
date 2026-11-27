@@ -43,7 +43,7 @@ history):
 | 19 | `focus_history.reverse`; an event too large to send becomes `event_dropped` | gated, not called (Focus history) |
 | 20 | `client.undo_close`; `undoable` on `block.close`, `session.close_window`, `session.destroy` | Undo Close |
 | 21 | two zooms per window: `tiled_zoomed_block_id`, and a layout change no longer ends a zoom | Zoom |
-| 22 | `session.transfer_window` | gated, not used (below) |
+| 22 | `session.transfer_window` | Move to Session (below) |
 | 24 at the latest | the `com.superlogical.fs` block (tar upload and download), `terminal.program_resume_records` | folders and several items (The fs block); `program_resume_records` not used |
 
 The oldest revision the app serves stays 13: servers at 13, 18, 19 and 24 connect and work
@@ -174,11 +174,27 @@ every revision, and `zoomsApart` (the field is there) says how a tiled zoom is d
 moves and focus changes no longer end zooms the old way; the app reads the view, so it shows
 whatever the server reports.
 
-## Not used: `session.transfer_window`, Program Resume
+## `session.transfer_window` (revision 22)
 
-- `session.transfer_window` (revision 22) moves a tab with its running programs to another
-  session. No phone surface moves a tab across sessions: the sidebar's drag keeps a tab inside
-  its session (docs/sidebar.md, Reorder). A drop on another session's tabs is the candidate.
+Moves a tab with its running programs to another session: Move to Session (docs/sidebar.md).
+
+- Sent with `session_id`, `window_id`, `to_session_id`, `focus` (true only for the tab on
+  screen) and, from a drop, `before_window_id`. It is ordered, like
+  `session.move_window`. The answer's `revision` and `to_revision` are what the app holds the
+  move against (`TabTransfer`).
+- The window and its blocks keep their IDs. The session it leaves sends `window_closed` and a
+  `block_closed` for each block; the destination sends `block_created` for each and then
+  `window_created`. The app follows the IDs (`TabMoves`); a `block_closed` for a block of the
+  phone's own move forgets nothing.
+- The streams opened through the old session end; they are opened again through the new one,
+  with a new ticket (docs/terminal.md, A tab that moves).
+- The caller becomes the blocks' owner when it is attached to the destination, which the app
+  always is.
+- `bad_request` for the same session (never sent), `conflict` (the destination is full, or a block
+  is starting or moving), `session_not_found`, `not_found`: each a notice, the tab where it was.
+
+## Not used: Program Resume
+
 - `com.superlogical.terminal.program_resume_records` lists the commands programs reported with
   OSC 7577 to restart them; a command can hold a secret. Not used.
 - The creator list names the fs creator and `program_resume_records` at every revision of a

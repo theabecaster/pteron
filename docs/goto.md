@@ -116,6 +116,7 @@ wins); the keys below are the defaults the app sends, which are the Mac's.
 | Tab | Go to Tab 1–8, Go to Last Tab | ⌘1–⌘9 | that tab exists |
 | Tab | Show All Tabs (the app's own) | ⇧⌘\ | a tab |
 | Tab | Move Tab Backward, Move Tab Forward | ⌃⇧⇞ ⌃⇧⇟ | the server can, another tab |
+| Tab | Move Tab to Session… (the app's own) | | the computer moves tabs (revision 22) and has another session (below) |
 | Pane | Split Pane Left, Right, Up, Down | ⇧⌘← ⌘D ⇧⌘↑ ⇧⌘D | a pane |
 | Pane | Split Pane Best Fit | ⌘↩ | a terminal pane |
 | Pane | Focus Next Pane, Focus Previous Pane | ⌘] ⌘[ | another pane to show |
@@ -185,6 +186,22 @@ Not here, with the reason:
   and is never sent later; a key-bound action keeps today's queue. After 1.5 s without an answer
   "Running Dev Layout…" shows on the notice job lane, for about 6 s at most.
 - A place that closed meanwhile says "That tab closed." and leaves the recents.
+
+## Move Tab to Session
+
+The palette's way to Move to Session ([sidebar.md](sidebar.md), Move to Session). The Rex app
+has no action for it, so the name follows Move Pane to Tab…, and it is the app's own action,
+`client.tab.move_to_session`, listed after Move Tab Forward. A key the user's init.lua binds to
+it works as any other.
+
+- The row turns the palette into a session chooser in place, with an empty field and "Move tab to
+  session" in it (`GoToScope.moveTab`): the target tab's computer's other sessions, in sidebar
+  order, matched as Change Session matches. The key or a command run from elsewhere opens the
+  palette in that scope on the tab on screen.
+- Return or a tap moves the target tab to the session picked, last there, and closes the palette;
+  the keyboard goes back to the pane, which stays on screen in its new session. Esc closes it
+  and moves nothing.
+- It shows only where the computer moves tabs and has another session.
 
 ## Undo Close
 

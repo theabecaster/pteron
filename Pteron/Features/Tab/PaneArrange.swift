@@ -14,6 +14,10 @@ enum PaneCommand: CaseIterable, Sendable {
     case moveTab
     /// The sidebar's session drag.
     case moveSession
+    /// A tab to another session of its computer, with its programs running: Move to Session in
+    /// the tab menus, Move Tab to Session… in the palette, and a sidebar drag onto another
+    /// session (`session.transfer_window`, revision 22).
+    case transferTab
     /// Floating windows: Minimize (`pane.minimize_floating`), Minimize All
     /// (`pane.minimize_all_floating`), a minimized float's row in Arrange, and the raise a tap on
     /// a float behind another sends.
@@ -29,6 +33,7 @@ enum PaneCommand: CaseIterable, Sendable {
         case .closeOthers: ["block.close"]
         case .moveTab: ["session.move_window"]
         case .moveSession: ["session.move"]
+        case .transferTab: ["session.transfer_window"]
         case .minimize, .minimizeAll, .restore, .raise: [FloatArrange.layerStateMethod]
         }
     }
@@ -44,6 +49,7 @@ enum PaneCommand: CaseIterable, Sendable {
         case "pane.move_to_tab": .moveToTab
         case "pane.move_to_new_tab": .moveToNewTab
         case "client.tab.move.backward", "client.tab.move.forward": .moveTab
+        case "client.tab.move_to_session": .transferTab
         case "pane.minimize_floating": .minimize
         case "pane.minimize_all_floating": .minimizeAll
         default: nil
@@ -57,13 +63,15 @@ struct PaneSupport: Equatable, Sendable {
     var revision: Int
     var absent: Set<String> = []
 
-    /// Every method the pane commands use is in revision 13. Below it nothing is known, so they
-    /// stay away, exactly as before they existed.
+    /// The pane commands' methods are in revision 13, but for those `RexAPI` lists with a later
+    /// one (`session.transfer_window`, 22). Below 13 nothing is known, so they stay away,
+    /// exactly as before they existed.
     static let minimumRevision = 13
     static let none = PaneSupport(revision: 0)
 
     func has(_ c: PaneCommand) -> Bool {
-        revision >= Self.minimumRevision && c.methods.allSatisfy { !absent.contains($0) }
+        revision >= Self.minimumRevision
+            && c.methods.allSatisfy { !absent.contains($0) && revision >= RexAPI.minimum(for: $0) }
     }
 }
 
@@ -93,7 +101,7 @@ enum PaneArrange {
         // Balance evens the tiled splits; floats have none.
         case .balance: return (w.layout?.leaves.count ?? 0) > 1
         case .moveTab: return t.tabs.count > 1
-        case .moveSession: return true
+        case .moveSession, .transferTab: return true
         case .minimize: return FloatArrange.minimizable(w, block: t.block) != nil
         case .minimizeAll: return !FloatArrange.minimizeAll(w).isEmpty
         case .restore: return !w.minimizedFloating.isEmpty

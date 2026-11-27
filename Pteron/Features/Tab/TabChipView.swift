@@ -21,8 +21,8 @@ struct TabChipView: View {
                 .accessibilityLabel(chip.spoken)
                 .accessibilityAddTraits(chip.active ? .isSelected : [])
                 .accessibilityActions {
-                    ForEach(chip.menu, id: \.self) { action in
-                        Button(action.title) { onAction(action) }
+                    ForEach(chip.spokenActions) { a in
+                        Button(a.title) { onAction(a.action) }
                     }
                 }
             if chip.showsClose { close }
@@ -34,6 +34,10 @@ struct TabChipView: View {
         .contentShape(.contextMenuPreview, ChipCapsule())
         .contextMenu {
             ForEach(chip.menu, id: \.self) { action in
+                if action == .close {
+                    // Before Close Tab, as in the sidebar's tab menu.
+                    MoveToSessionMenu(choices: chip.moves) { onAction(.moveToSession($0)) }
+                }
                 Button(role: action.destructive ? .destructive : nil) { onAction(action) } label: {
                     Label(action.title, systemImage: action.symbol)
                 }

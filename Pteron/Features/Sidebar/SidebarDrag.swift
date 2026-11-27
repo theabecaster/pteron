@@ -49,6 +49,12 @@ final class SidebarDrag {
     enum Item: Equatable {
         case tab(server: UUID, session: String, window: String)
         case session(server: UUID, session: String)
+
+        var serverID: UUID {
+            switch self {
+            case .tab(let s, _, _), .session(let s, _): s
+            }
+        }
     }
 
     /// Where the gap line is drawn: the boundary's y in the list, and its indent.
@@ -57,6 +63,9 @@ final class SidebarDrag {
         var leading: CGFloat
         /// The place in the order: 0 before the first row, the count after the last.
         var index: Int
+        /// A tab's gap: the session whose tabs `index` counts in. Another session than the
+        /// lifted tab's is a move there (`session.transfer_window`).
+        var session: String? = nil
     }
 
     struct Frame: Equatable {
@@ -123,7 +132,7 @@ final class SidebarDrag {
 
     private func move(to next: Gap?) {
         guard next != gap else { return }
-        if next?.index != gap?.index, next != nil { Haptic.selection() }
+        if next != nil, next?.index != gap?.index || next?.session != gap?.session { Haptic.selection() }
         gap = next
     }
 
@@ -175,6 +184,9 @@ final class SidebarDrag {
     struct Orders {
         var sessions: (UUID) -> [String]
         var tabs: (UUID, String) -> [String]
+        /// Whether the computer moves tabs between sessions: a lifted tab may then drop into
+        /// another of its sessions.
+        var transfers: (UUID) -> Bool = { _ in false }
     }
 }
 
@@ -185,14 +197,19 @@ enum SidebarGaps {
     /// tab, so a point over a session's tabs goes to that session's nearer edge.
     static func gap(for item: SidebarDrag.Item, at y: CGFloat, frames: [String: SidebarDrag.Frame],
                     orders: SidebarDrag.Orders) -> SidebarDrag.Gap? {
+        // Over another computer's row there is nowhere to drop: tabs and sessions stay on theirs.
+        if frames.values.contains(where: { $0.kind.serverID != item.serverID && $0.minY <= y && y < $0.maxY }) { return nil }
         switch item {
         case .tab(let server, let session, _):
-            let ids = orders.tabs(server, session)
-            let rows = frames.values.compactMap { f -> (Int, SidebarDrag.Frame)? in
-                guard case .tab(server, session, let w) = f.kind, let i = ids.firstIndex(of: w) else { return nil }
-                return (i, f)
+            guard orders.transfers(server) else {
+                let ids = orders.tabs(server, session)
+                let rows = frames.values.compactMap { f -> (Int, SidebarDrag.Frame)? in
+                    guard case .tab(server, session, let w) = f.kind, let i = ids.firstIndex(of: w) else { return nil }
+                    return (i, f)
+                }
+                return nearest(y, rows, leading: SidebarMetrics.tabLeading).map { var g = $0; g.session = session; return g }
             }
-            return nearest(y, rows, leading: SidebarMetrics.tabLeading)
+            return acrossSessions(y, server: server, frames: frames, orders: orders)
         case .session(let server, _):
             let ids = orders.sessions(server)
             var blocks: [Int: SidebarDrag.Frame] = [:]
@@ -216,6 +233,40 @@ enum SidebarGaps {
         }
     }
 
+    /// A tab on a computer that moves tabs between sessions: the gap nearest to `y` among every
+    /// session's tab rows, as within one session. A session that shows no tab rows (folded, or
+    /// without tabs) has one gap, under its header, which puts the tab last there.
+    static func acrossSessions(_ y: CGFloat, server: UUID, frames: [String: SidebarDrag.Frame],
+                               orders: SidebarDrag.Orders) -> SidebarDrag.Gap? {
+        var best: SidebarDrag.Gap?
+        func consider(_ g: SidebarDrag.Gap?) {
+            guard let g else { return }
+            if best.map({ abs(g.y - y) < abs($0.y - y) }) ?? true { best = g }
+        }
+        var tabRows: [String: [(Int, SidebarDrag.Frame)]] = [:]
+        var headers: [String: SidebarDrag.Frame] = [:]
+        var orderOf: [String: [String]] = [:]
+        for f in frames.values {
+            switch f.kind {
+            case .tab(server, let s, let w):
+                let ids = orderOf[s] ?? orders.tabs(server, s)
+                orderOf[s] = ids
+                if let i = ids.firstIndex(of: w) { tabRows[s, default: []].append((i, f)) }
+            case .session(server, let s):
+                headers[s] = f
+            default:
+                continue
+            }
+        }
+        for (s, rows) in tabRows {
+            consider(nearest(y, rows, leading: SidebarMetrics.tabLeading).map { var g = $0; g.session = s; return g })
+        }
+        for (s, h) in headers where tabRows[s] == nil {
+            consider(SidebarDrag.Gap(y: h.maxY, leading: SidebarMetrics.tabLeading, index: orders.tabs(server, s).count, session: s))
+        }
+        return best
+    }
+
     /// The boundary nearest to `y` among the rows (each with its place in the full order): above
     /// each row, and below the last one.
     static func nearest(_ y: CGFloat, _ rows: [(Int, SidebarDrag.Frame)], leading: CGFloat) -> SidebarDrag.Gap? {
@@ -233,7 +284,7 @@ enum SidebarGaps {
 struct SidebarDropDelegate: DropDelegate {
     let drag: SidebarDrag
     let orders: SidebarDrag.Orders
-    let onDrop: (SidebarDrag.Item, Int) -> Void
+    let onDrop: (SidebarDrag.Item, SidebarDrag.Gap) -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
         drag.item != nil && info.hasItemsConforming(to: [SidebarDrag.type])
@@ -243,7 +294,8 @@ struct SidebarDropDelegate: DropDelegate {
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         drag.hover(info.location.y, orders: orders)
-        return DropProposal(operation: .move)
+        // Nowhere to drop here (another computer's rows): the row goes back where it was.
+        return DropProposal(operation: drag.gap == nil ? .forbidden : .move)
     }
 
     func dropExited(info: DropInfo) { drag.end() }
@@ -251,7 +303,7 @@ struct SidebarDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         defer { drag.end() }
         guard let item = drag.item, let gap = drag.gap else { return false }
-        onDrop(item, gap.index)
+        onDrop(item, gap)
         return true
     }
 }

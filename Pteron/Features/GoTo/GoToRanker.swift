@@ -72,7 +72,7 @@ enum GoToRanker {
             let places = sorted(scored.filter { items[$0.index].kind != .command })
             let commands = sorted(scored.filter { items[$0.index].kind == .command })
             out = Array(places.prefix(limit)) + Array(commands.prefix(commandsAfterPlaces))
-        case .sessions, .commands:
+        case .sessions, .commands, .moveTab:
             out = Array(sorted(scored).prefix(limit))
         }
         if let n = Int(query.trimmingCharacters(in: .whitespaces)), query.allSatisfy({ $0.isNumber || $0 == " " }),
@@ -121,7 +121,7 @@ enum GoToRanker {
         let commands = scope == .commands
         let wanted = Set(commands ? recentIDs : waiting + recentIDs)
         var found: [GoToItemID: Int] = [:]
-        if !wanted.isEmpty, scope != .sessions {
+        if !wanted.isEmpty, scope == .anything || scope == .commands {
             for (i, item) in items.enumerated() where (item.kind == .command) == commands && wanted.contains(item.id) {
                 found[item.id] = i
             }
@@ -141,8 +141,8 @@ enum GoToRanker {
             if !r.isEmpty { out.append(Section(header: "Recent", indices: r)) }
             if out.isEmpty { out.append(Section(header: nil, indices: Array(sorted { $0.kind != .command }.prefix(limit)))) }
             return out
-        case .sessions:
-            return [Section(header: nil, indices: sorted { $0.kind == .session })]
+        case .sessions, .moveTab:
+            return [Section(header: nil, indices: sorted { scope.lists($0) })]
         case .commands:
             let recent = Array(recentIDs.compactMap { found[$0] }.prefix(recentShown))
             var out: [Section] = []

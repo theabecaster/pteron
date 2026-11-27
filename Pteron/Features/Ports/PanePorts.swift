@@ -15,7 +15,7 @@ import UIKit
 @MainActor
 final class PanePorts {
     let server: ServerConnection
-    let sessionID: String
+    var sessionID: String
     let blockID: String
     weak var view: UIView?
     /// Opens a link that isn't the router's, and says whether it opened. Tests put their own here.

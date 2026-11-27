@@ -110,4 +110,14 @@ enum TabHistory {
     static func visiting(_ sel: Selection, _ list: [Selection]) -> [Selection] {
         Array(([sel] + list.filter { $0 != sel }).prefix(limit))
     }
+
+    /// A tab moved from one session to another: its entry names the new session, in its place.
+    static func moved(_ old: Selection, to new: Selection, in list: [Selection]) -> [Selection] {
+        var out: [Selection] = []
+        for s in list {
+            let t = s == old ? new : s
+            if !out.contains(t) { out.append(t) }
+        }
+        return out
+    }
 }

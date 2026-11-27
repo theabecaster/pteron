@@ -172,7 +172,8 @@ Add opens the scanner.
 ## Reorder
 
 Tabs move within their session and sessions within their machine, by dragging their rows, as on
-the Mac (`Features/Sidebar/SidebarDrag.swift`). There is no visible Move item.
+the Mac (`Features/Sidebar/SidebarDrag.swift`). There is no visible Move item. On a computer at
+revision 22 or later a tab also drops into another of its sessions (Move to Session, below).
 
 - **Lift.** A press that moves lifts the row (`.onDrag`, beside the row's context menu, carrying
   only ids). A press that doesn't move shows the menu as before. A sideways move before the lift
@@ -183,8 +184,12 @@ the Mac (`Features/Sidebar/SidebarDrag.swift`). There is no visible Move item.
   list's space without being observed (pruned when it leaves), and the point maps to the nearest
   gap: between two tab rows of the lifted tab's session, or above a session's header or below its
   last tab, so a session dropped over another's tabs goes to that session's nearer edge
-  (`SidebarGaps`). A 2 pt accent line at the row's indent marks the gap, with a selection tick
-  when it changes. Held in the top or bottom 44 pt, the list scrolls a step every 60 ms. Ids are
+  (`SidebarGaps`). Where the computer moves tabs between sessions, a tab's gaps are every
+  session's of that computer: between any two tab rows, below a session's last tab, and under
+  the header of a session that shows no tab rows (folded, or without tabs), which puts the tab
+  last there (`SidebarGaps.acrossSessions`). Over another computer's rows there is no gap: the
+  drop is refused and the row goes back. A 2 pt accent line at the row's indent marks the gap,
+  with a selection tick when it changes, also when it moves to another session. Held in the top or bottom 44 pt, the list scrolls a step every 60 ms. Ids are
   worked out again at the drop; a row that is gone bumps.
 - **Held order** (`PendingOrder`, on the server's connection). On the drop the rows move by id on
   the fold's spring and the new order shows at once, applied where the outline's lists come from
@@ -199,6 +204,63 @@ the Mac (`Features/Sidebar/SidebarDrag.swift`). There is no visible Move item.
 - **The session list** (`session_moved`, and a dropped session event) is read once for a burst,
   one read at a time. An event while a read is out asks for one more, and a read that an event or
   a full sync came after is dropped, so an older list never lands last.
+
+## Move to Session
+
+A tab moves to another session of the same computer with its programs running
+(`session.transfer_window`, revision 22). The Rex app has no such action (its build of 25
+November 2026 lists none, and its tab menus have none); the CLI has `rex window move --to`.
+
+- **Where.** The tab row's menu: Move to Session, a submenu of the computer's other sessions in
+  sidebar order, between New Tab and Close Tab (`TabRowMoveMenu`, its own view, so the session
+  list it reads redraws the menu and not the row). Tab mode's chip menu has the same
+  ([tab-mode.md](tab-mode.md)), the palette has Move Tab to Session… ([goto.md](goto.md)), and a
+  tab row drops onto another session (Reorder, above).
+- **Gating.** Below revision 22, or where the server answered `method_not_found`, none of the
+  four shows (`PaneSupport.has(.transferTab)`, `ServerConnection.movesTabs`); nor on a computer
+  that is down, nor with no other session.
+- **No question.** Moving destroys nothing, and the tab can move back.
+- **The call** (`ServerConnection.transferTab`): `before_window_id` is the tab under the drop's
+  gap (none from a menu: last); `focus` is true only for the tab on screen, which the phone
+  follows and so shows as the destination's active tab, as showing a tab does; a move of any
+  other tab leaves the destination's active tab as it was. A `not_found` because the tab it was
+  to go before closed meanwhile is asked once more, last.
+- **The tab is in one session at every moment** (`TabTransfer`). Before the answer it stays
+  where it was, also when a view of the session it leaves comes in without it; a view of the
+  destination that shows it moves it in one step. With the answer both sessions change in one
+  step, in views older than the revisions the answer gave, and the server's own views (read at
+  once) take over. The hold goes when both views reach those revisions, 2 s after the answer at
+  most, at once on a failure, and on a new connection.
+- **The tab on screen follows** (`AppModel.tabMoved`), in the same turn: the same tab under its
+  new session, its panes with their terminals, history and fit claims (docs/terminal.md, A tab
+  that moves). Nothing draws the empty state or `CloseNext` in between.
+- **A move by another client** (the Rex app, `rex window move --to`) is found the same way: a tab
+  ID that leaves one session's view and shows up in another's within 10 s (`TabMoves`). Its
+  panes, places and the tab on screen follow it as for the phone's own move. The server closes
+  the panes' streams first there, so a pane shows "This pane closed." until its view in the new
+  session lands; when the source's view lands first, the tab on screen is taken for closed and
+  `CloseNext` runs, as for any closed tab.
+- **Errors**, one notice in the error style, the tab where it was: "Couldn't move the tab.
+  “ops” is full, or a pane in the tab is still starting." (`conflict`), "Couldn't move the tab.
+  That session closed." (`session_not_found`), "Couldn't move the tab. That tab closed."
+  (`not_found`), else the app's usual words for a failed call (`TransferCopy`).
+- **What follows the tab.** What the app keeps by pane is kept by block ID, which the move
+  keeps: agent status and badges (`meta`), progress rings, pane names, ports, owner and typing
+  aid observers. The `block_closed` the old session sends for each pane is no close for a tab the
+  phone moves (`transferring`); after another client's move the ports are read again and the
+  observers are made again. What names a session follows the tab: the selection, recent tabs
+  and Navigate Back's places (`TabHistory.moved`, `NavHistory.moved`), the panes' hosts, parked
+  and warm lists and compose drafts (`TerminalHostPool.moved`), the watched ports (`portWatch`).
+  What was handed out with a session ID (a delivered notification, a widget's or the watch's
+  snapshot, a push) finds the tab where it is now: `openPane`, `openPane(link:)` and the watch's
+  Enter and Interrupt (`LiveActionChannel`) look up the session that holds the tab or pane, and
+  the next snapshot names the new session. Fold state is per session and stays; the session the
+  tab went to opens, as for any new selection.
+- **A session left with no tabs** stays, empty, as after Close Tab on its last tab: its header
+  with no rows.
+- **The Rex app** attached to both sessions sees the tab close in one and open in the other, with
+  the same IDs. The phone becomes the panes' owner, as the server makes the calling client that
+  is attached to the destination; a pane's fit claim stays as it was.
 
 ## Postures
 
@@ -322,3 +384,4 @@ not help: every step sized the whole screen again. With trivial rows (one `Text`
 - Rows are buttons, so Full Keyboard Access moves through them and Space opens or folds.
 - Tab rows say their pane count and status ("2 panes", "waiting for you").
 - Where rows can be reordered, tab and session rows offer Move Up and Move Down, one place each.
+- A tab row's menu, Move to Session included, is VoiceOver's way to another session.

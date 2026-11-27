@@ -10,6 +10,9 @@ enum GoToScope: Equatable, Sendable {
     case sessions
     /// `client.palette.toggle`.
     case commands
+    /// Move Tab to Session…: the sessions a tab of `from` can move to, on `server`. Picking one
+    /// moves the palette's target tab there (docs/goto.md, Move Tab to Session).
+    case moveTab(server: UUID, from: String)
 
     /// The palette action that opens this scope, as the keymap names it.
     var action: String {
@@ -17,6 +20,7 @@ enum GoToScope: Equatable, Sendable {
         case .anything: "pane.go_to"
         case .sessions: "session.switch"
         case .commands: "client.palette.toggle"
+        case .moveTab: "client.tab.move_to_session"
         }
     }
 
@@ -25,6 +29,18 @@ enum GoToScope: Equatable, Sendable {
         case .anything: "Go to tab, pane or session"
         case .sessions: "Change session"
         case .commands: "Run a command"
+        case .moveTab: "Move tab to session"
+        }
+    }
+
+    /// Whether a row is one this scope lists, by kind and, for Move Tab to Session, by place.
+    func lists(_ item: GoToItem) -> Bool {
+        switch self {
+        case .anything: true
+        case .sessions: item.kind == .session
+        case .commands: item.kind == .command
+        case .moveTab(let server, let from):
+            if case .session(server, let sid) = item.id { sid != from } else { false }
         }
     }
 }

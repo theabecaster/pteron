@@ -113,6 +113,7 @@ enum AppAction {
             case "pane.minimize_floating": return .command(.minimizeFloat)
             case "pane.minimize_all_floating": return .command(.minimizeAllFloats)
             case "client.tab.move.backward": return .command(.moveTab(-1))
+            case "client.tab.move_to_session": return .command(.moveTabToSession)
             default: return .command(.moveTab(1))
             }
         }
@@ -230,6 +231,8 @@ enum KeyActions {
         Info(name: "client.tab.overview", title: "Show All Tabs", category: "Tab", repeats: false),
         Info(name: "client.tab.move.backward", title: "Move Tab Backward", category: "Tab", repeats: true),
         Info(name: "client.tab.move.forward", title: "Move Tab Forward", category: "Tab", repeats: true),
+        // The app's own: the Rex app has no action that moves a tab to another session.
+        Info(name: "client.tab.move_to_session", title: "Move Tab to Session…", category: "Tab", repeats: false),
         Info(name: "pane.split", title: "Split Pane", category: "Pane", repeats: false),
         Info(name: "pane.split.left", title: "Split Pane Left", category: "Pane", repeats: false),
         Info(name: "pane.split.right", title: "Split Pane Right", category: "Pane", repeats: false),

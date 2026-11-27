@@ -77,7 +77,7 @@ struct StripRoutes {
         switch action {
         case .rename, .close, .closeOthers:
             guard !dialogs.asking else { return }
-        case .moveLeft, .moveRight:
+        case .moveLeft, .moveRight, .moveToSession:
             break
         }
         switch action {
@@ -103,6 +103,8 @@ struct StripRoutes {
             }
             Haptic.selection()
             server.dragTab(session, tab, move)
+        case .moveToSession(let dest):
+            model.moveTab(server, session: session, window: tab, to: dest)
         }
     }
 
