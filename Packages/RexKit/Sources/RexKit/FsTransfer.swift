@@ -7,10 +7,12 @@ import Foundation
 /// (preview.25, macOS):
 ///
 /// - Upload: after the WELCOME the client sends the archive in messages of at most 64 KiB, then
-///   one empty message. The server puts everything in place at once and closes with 1000.
-///   Nothing shows at the destination before that: a stream that drops or closes early leaves
-///   the destination as it was. An existing folder is merged into and an existing file is
-///   replaced, without a word.
+///   one empty message. The server then puts everything in place (under `/tmp/.rex-fs-<id>`,
+///   moved to the destination at the end: about 220 entries a second, 13 s for 3,000 small files)
+///   and closes with 1000. Nothing shows at the destination before that: a stream that drops or
+///   closes early leaves the destination as it was. Once the end is in, closing the data
+///   connection doesn't stop it, but closing the fs block does (4000), and nothing is left. An
+///   existing folder is merged into and an existing file is replaced, without a word.
 /// - A top-level entry count that differs from `roots`, a path with `..` or an absolute one, and
 ///   an entry whose folder came before it in no entry, close with 4006. `entries` and `size` are
 ///   not checked against the archive; `size` decides whether there is room (`too_large`, which
@@ -67,7 +69,8 @@ public final class FsUploader {
     var rate = UploadRate()
     var sleep: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     private var socket: (any TunnelSocket)?
-    private var cancelled = false
+    private let stop = CancelWait(Failure.cancelled)
+    private var cancelled: Bool { stop.isSet }
     private var endSent = false
 
     public convenience init(control: RexControl, sessionID: String, blockID: String, open: @escaping FsOpen) {
@@ -93,16 +96,21 @@ public final class FsUploader {
             } catch let f as Failure where f.isRetryable && attempt < Self.retryLimit && !cancelled {
                 attempt += 1
                 onRetry(attempt)
-                await sleep(.seconds(1))
-                if cancelled { throw Failure.cancelled }
+                let sleep = self.sleep
+                try await stop.unlessCancelled { await sleep(.seconds(1)) }
             }
         }
     }
 
-    /// Stops the upload: the server keeps nothing of it. Once the end has gone out it is too late.
+    /// Stops the upload: `send` throws `Failure.cancelled` at once, wherever it waits (the
+    /// start's answer, the data connection's handshake, the pause before a retry, the stream, the
+    /// server's confirmation). The start's late answer is dropped and its ticket never used; a
+    /// data connection that opens late is closed. Before the end the server keeps nothing. After
+    /// it the server is still putting the archive in place, seconds for a large folder, and only
+    /// the fs block's close stops that, which the caller does once `send` ends: the folder is
+    /// left only if the server had finished.
     public func cancel() {
-        guard !endSent else { return }
-        cancelled = true
+        stop.cancel()
         socket?.close()
     }
 
@@ -111,20 +119,28 @@ public final class FsUploader {
         endSent = false
         let args: JSONObject = ["ref": BytesStream.ref("upload"), "path": path, "roots": plan.roots,
                                 "entries": plan.entries, "size": plan.size]
-        let reply: JSONObject
-        do {
-            reply = try await link.call(FsBlock.upload, ["session_id": sessionID, "block_id": blockID, "args": args])
-        } catch {
-            throw Self.failure(beginning: error)
+        let link = self.link, payload: JSONObject = ["session_id": sessionID, "block_id": blockID, "args": args]
+        let reply = try await stop.unlessCancelled {
+            do { return try await link.call(FsBlock.upload, payload) } catch { throw Self.failure(beginning: error) }
         }
         guard let ticket = reply.str("ticket") else { throw Failure.lost("no ticket") }
         let dest = reply.str("path") ?? path
         if cancelled { throw Failure.cancelled }
-        let socket: any TunnelSocket
-        do { socket = try await open(ticket) } catch { throw Failure.lost(error.localizedDescription) }
+        let open = self.open
+        let socket = try await stop.unlessCancelled({
+            do { return try await open(ticket) } catch { throw Failure.lost(error.localizedDescription) }
+        }, late: { $0.close() })
         self.socket = socket
         defer { self.socket = nil }
         if cancelled { socket.close(); throw Failure.cancelled }
+        // A cancel ends the wait at once; the stream, which it closed, ends behind it.
+        try await stop.unlessCancelled { try await self.stream(plan, over: socket, progress: progress) }
+        return dest
+    }
+
+    /// Sends the archive and its end over `socket`, then waits for the server's confirmation.
+    private func stream(_ plan: TarPlan, over socket: any TunnelSocket,
+                        progress: @escaping @MainActor (Int64, Int64) -> Void) async throws {
         let stream = TarStream(plan)
         let pacer = UploadPacer(link: link, rate: rate, sleep: sleep)
         defer { rate = pacer.rate }
@@ -158,7 +174,6 @@ public final class FsUploader {
             throw endSent ? Failure.unconfirmed : Failure.lost(error.localizedDescription)
         }
         try await waitForClose(socket)
-        return dest
     }
 
     /// Up to `max` bytes of the archive as messages of at most 64 KiB, read and sent off the main
@@ -187,6 +202,8 @@ public final class FsUploader {
         }
         defer { timer.cancel() }
         await Self.drain(socket)
+        // The close was this side's own.
+        if cancelled { throw Failure.cancelled }
         if timedOut.set { throw Failure.unconfirmed }
         switch socket.closeCode {
         case BytesStream.normal: return
@@ -252,9 +269,8 @@ public final class FsDownloader {
     public let sessionID: String
     public let blockID: String
     private var socket: (any TunnelSocket)?
-    private var cancelled = false
-    /// Ends the wait under way (`unlessCancelled`) with `Failure.cancelled`.
-    private var endWait: (@MainActor () -> Void)?
+    private let stop = CancelWait(Failure.cancelled)
+    private var cancelled: Bool { stop.isSet }
 
     public convenience init(control: RexControl, sessionID: String, blockID: String, open: @escaping FsOpen) {
         self.init(link: control, sessionID: sessionID, blockID: blockID, open: open)
@@ -272,11 +288,8 @@ public final class FsDownloader {
     /// folder, so that answer is not waited for: it is dropped when it comes, and its ticket is
     /// never used. A data connection that opens after the cancel is closed.
     public func cancel() {
-        cancelled = true
+        stop.cancel()
         socket?.close()
-        let end = endWait
-        endWait = nil
-        end?()
     }
 
     /// Downloads `paths` (each taken literally: `TarPath.literal`), folders with everything in
@@ -288,7 +301,7 @@ public final class FsDownloader {
         if cancelled { throw Failure.cancelled }
         let args: JSONObject = ["ref": BytesStream.ref("download"), "paths": paths.map(TarPath.literal), "recursive": true]
         let link = self.link, payload: JSONObject = ["session_id": sessionID, "block_id": blockID, "args": args]
-        let reply = try await unlessCancelled {
+        let reply = try await stop.unlessCancelled {
             do { return try await link.call(FsBlock.download, payload) } catch { throw Self.failure(beginning: error) }
         }
         let info = Info(roots: reply.int("roots") ?? 0, entries: reply.int("entries") ?? 0, size: Int64(reply.int("size") ?? 0))
@@ -296,7 +309,7 @@ public final class FsDownloader {
         guard hasRoom(info.size) else { throw Failure.noRoom(info.size) }
         if cancelled { throw Failure.cancelled }
         let open = self.open
-        let socket = try await unlessCancelled({
+        let socket = try await stop.unlessCancelled({
             do { return try await open(ticket) } catch { throw Failure.lost(error.localizedDescription) }
         }, late: { $0.close() })
         self.socket = socket
@@ -315,22 +328,6 @@ public final class FsDownloader {
             do { try extractor.finish() } catch { throw Failure.lost("the archive ended early") }
             return Result(info: info, tops: extractor.tops, skipped: extractor.skipped)
         }
-    }
-
-    /// What `op` gives, or `Failure.cancelled` as soon as `cancel()` is called, whichever comes
-    /// first. What `op` gives after that goes to `late`.
-    private func unlessCancelled<T>(_ op: @escaping @MainActor () async throws -> T,
-                                    late: @escaping @MainActor (T) -> Void = { _ in }) async throws -> T {
-        if cancelled { throw Failure.cancelled }
-        let race = FirstOf<T>()
-        endWait = { race.finish(.failure(Failure.cancelled)) }
-        defer { endWait = nil }
-        Task { @MainActor in
-            let r: Swift.Result<T, Error>
-            do { r = .success(try await op()) } catch { r = .failure(error) }
-            if !race.finish(r), case .success(let v) = r { late(v) }
-        }
-        return try await race.value()
     }
 
     enum PullEnd: Sendable {
@@ -376,6 +373,41 @@ public final class FsDownloader {
             if m.contains("no such file") || m.contains("does not exist") { return .notFound }
             return .refused(e.message)
         }
+    }
+}
+
+/// A transfer's Cancel and the wait it ends: what is waited for through `unlessCancelled` ends
+/// with the transfer's `cancelled` failure as soon as `cancel()` is called.
+@MainActor
+private final class CancelWait {
+    private let failure: Error
+    private(set) var isSet = false
+    /// Ends the wait under way with `failure`.
+    private var endWait: (@MainActor () -> Void)?
+
+    init(_ failure: Error) { self.failure = failure }
+
+    func cancel() {
+        isSet = true
+        let end = endWait
+        endWait = nil
+        end?()
+    }
+
+    /// What `op` gives, or the cancelled failure as soon as `cancel()` is called, whichever comes
+    /// first. What `op` gives after that goes to `late`. One wait at a time.
+    func unlessCancelled<T>(_ op: @escaping @MainActor () async throws -> T,
+                            late: @escaping @MainActor (T) -> Void = { _ in }) async throws -> T {
+        if isSet { throw failure }
+        let race = FirstOf<T>(), failure = self.failure
+        endWait = { race.finish(.failure(failure)) }
+        defer { endWait = nil }
+        Task { @MainActor in
+            let r: Swift.Result<T, Error>
+            do { r = .success(try await op()) } catch { r = .failure(error) }
+            if !race.finish(r), case .success(let v) = r { late(v) }
+        }
+        return try await race.value()
     }
 }
 

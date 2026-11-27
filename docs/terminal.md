@@ -1326,6 +1326,17 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
     read"); a lost stream starts over from the start, at most twice; once the end has gone out a
     lost confirmation says to check the pane. Too little room on the computer (Rex wants the
     size and 2 GiB to spare) is said before anything goes.
+  - **Cancel frees the sender at once.** `FsUploader.cancel` ends the send wherever it waits
+    (the start's answer, the data connection's handshake, the pause before a retry, the stream,
+    the server's confirmation), says "Didn't send what." and lets the next send start, on a block
+    of its own, while the cancelled one's block closes behind it. What that task does afterwards
+    (the start's late answer, whose ticket is never used, a data connection that opens late,
+    which is closed, the end of the close) shows nothing and types no path. Cancel still applies
+    once the end has gone out: the server then takes seconds to put the archive in place (13 s
+    for 3,000 small files on an M-series Mac, probed), closing the data connection doesn't stop
+    it, and the fs block's close does, leaving nothing. Only a server that finished before that
+    close leaves the whole folder in `/tmp/pteron-<12 hex>`, with no path typed. The next send's
+    progress takes the place of the note.
   - **The fs block.** One per transfer, made in the pane's session with `session.new_block` and
     closed when the transfer ends. It starts detached: no window holds it, so neither the phone
     nor the Mac app shows it, and its events change no view. Rex never removes one, so each block

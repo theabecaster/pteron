@@ -16,8 +16,13 @@ final class FileSender {
     var target: () -> String = { "this computer" }
     /// The pane's computer by name, for what Rex there can't do.
     var computer: () -> String = { "this computer" }
+    private let notice: Notice
     private var uploader: FileUploader?
-    private var treeUploader: FsUploader?
+    /// The tree send under way (its block may still be being made).
+    private var treeRun: TreeRun?
+    /// What the last Cancel of a tree send said. The next send takes its place, so its progress
+    /// shows at once.
+    private var cancelNote: String?
     /// A tree's walk is under way; Cancel sets this.
     private var planCancelled: CancelFlag?
     /// Runs an fs transfer: makes the session's fs block, hands `body` its ID and a way to open
@@ -31,12 +36,29 @@ final class FileSender {
     /// second one is turned away with a word instead of lost.
     private var claimed = false
 
-    var busy: Bool { claimed || uploader != nil || treeUploader != nil }
+    var busy: Bool { claimed || uploader != nil || treeRun != nil }
 
-    init(control: RexControl, sessionID: String, blockID: String) {
+    /// One send through an fs block. Its Cancel frees the sender at once: the next send can
+    /// start while this one's task still ends (the start's answer, the fs block's close, each a
+    /// round trip, and the close is what stops a server still putting the archive in place).
+    /// Whatever that task does after the Cancel shows nothing and types nothing.
+    private final class TreeRun {
+        let what: String
+        var uploader: FsUploader?
+        var background: BackgroundTask?
+        var retry: Notice.Action?
+        var cancelled = false
+        /// Out of background time: what it holds is kept for Try Again.
+        var cutOff = false
+
+        init(what: String) { self.what = what }
+    }
+
+    init(control: RexControl, sessionID: String, blockID: String, notice: Notice = .shared) {
         self.control = control
         self.sessionID = sessionID
         self.blockID = blockID
+        self.notice = notice
     }
 
     /// Sends `files` as one batch. Above `SendTarget.expensiveLimit` on an expensive network it asks
@@ -46,12 +68,12 @@ final class FileSender {
         guard !files.isEmpty else { return }
         guard !busy else {
             FileStaging.discard(files)
-            Notice.shared.show("Wait for the files on their way to finish.")
+            self.notice.show("Wait for the files on their way to finish.")
             return
         }
         if let big = files.first(where: { $0.size > FileUploader.maxFileSize }) {
             FileStaging.discard(files)
-            Notice.shared.show(SendTarget.tooLarge(big.name))
+            self.notice.show(SendTarget.tooLarge(big.name))
             return
         }
         let total = files.reduce(Int64(0)) { $0 + $1.size }
@@ -76,18 +98,39 @@ final class FileSender {
 
     func cancel() {
         uploader?.cancel()
-        treeUploader?.cancel()
         planCancelled?.set()
-        if claimed, treeUploader == nil { treeCancelPending = true }
+        if let run = treeRun { cancel(run) }
     }
 
-    /// Cancel came while a tree's fs block was being made, before its uploader existed.
-    private var treeCancelPending = false
+    /// Ends a tree send for the user now: it says so at once, and the next send can start. A run
+    /// that is no longer the one under way is left alone.
+    private func cancel(_ run: TreeRun, cutOff: Bool = false) {
+        guard treeRun === run else { return }
+        treeRun = nil
+        claimed = false
+        run.cancelled = true
+        run.cutOff = cutOff
+        run.uploader?.cancel()
+        if cutOff {
+            notice.show("Sending \(run.what) stopped in the background.", action: run.retry)
+        } else {
+            let note = "Didn't send \(run.what)."
+            cancelNote = note
+            notice.show(note, style: .neutral)
+        }
+    }
+
+    /// A new send starts: the note of the last one's Cancel makes way for its progress.
+    private func clearCancelNote() {
+        if let note = cancelNote { notice.withdraw(note) }
+        cancelNote = nil
+    }
 
     private func start(_ files: [StagedFile], over view: UIView?) {
         guard uploader == nil else { return FileStaging.discard(files) }
         let names = files.map(\.name)
         let to = target()
+        clearCancelNote()
         let up = FileUploader(control: control, sessionID: sessionID, blockID: blockID)
         uploader = up
         cutOff = false
@@ -102,7 +145,7 @@ final class FileSender {
             FileUploader.Item(name: f.name, size: f.size) { [url = f.url] in try FileSource(url: url) }
         }
         let cancel: @MainActor () -> Void = { [weak self] in self?.cancel() }
-        Notice.shared.showProgress(SendTarget.progress(names, to: to, fraction: 0), fraction: 0, cancel: cancel)
+        self.notice.showProgress(SendTarget.progress(names, to: to, fraction: 0), fraction: 0, cancel: cancel)
         #if DEBUG
         Self.logDigests(files)
         #endif
@@ -117,7 +160,7 @@ final class FileSender {
                     self.progress(names, to: to, sent: sent, total: total, cancel: cancel)
                 })
                 FileStaging.discard(files)
-                Notice.shared.show(SendTarget.done(names, to: to), style: .neutral)
+                self.notice.show(SendTarget.done(names, to: to), style: .neutral)
                 UIAccessibility.post(notification: .announcement, argument: SendTarget.done(names, to: to))
             } catch let f as FileUploader.Failure {
                 self.failed(f, files: files, to: to, over: view)
@@ -132,7 +175,7 @@ final class FileSender {
         let pct = Int(fraction * 100)
         guard pct != shownPercent else { return }
         shownPercent = pct
-        Notice.shared.showProgress(SendTarget.progress(names, to: to, fraction: fraction), fraction: fraction, cancel: cancel)
+        self.notice.showProgress(SendTarget.progress(names, to: to, fraction: fraction), fraction: fraction, cancel: cancel)
     }
 
     private func failed(_ f: FileUploader.Failure, files: [StagedFile], to: String, over view: UIView?) {
@@ -140,27 +183,27 @@ final class FileSender {
         let retry = Notice.Action(title: "Try Again") { [weak self, weak view] in self?.send(files, over: view) }
         switch f {
         case .cancelled where cutOff:
-            Notice.shared.show("Sending \(what) stopped in the background.", action: retry)
+            self.notice.show("Sending \(what) stopped in the background.", action: retry)
         case .cancelled:
             FileStaging.discard(files)
-            Notice.shared.show("Didn't send \(what).", style: .neutral)
+            self.notice.show("Didn't send \(what).", style: .neutral)
         case .unsupported:
             FileStaging.discard(files)
-            Notice.shared.show(Messages.updateRex(computer(), to: "send files"))
+            self.notice.show(Messages.updateRex(computer(), to: "send files"))
         case .unconfirmed:
             FileStaging.discard(files)
-            Notice.shared.show("Sent \(what), but \(to) didn't confirm it. \(Messages.sentUnknown)")
+            self.notice.show("Sent \(what), but \(to) didn't confirm it. \(Messages.sentUnknown)")
         case .tooLarge:
             FileStaging.discard(files)
-            Notice.shared.show(SendTarget.tooLarge(what))
+            self.notice.show(SendTarget.tooLarge(what))
         case .brokeRule:
-            Notice.shared.show("Couldn't send \(what): it changed while it was read.", action: retry)
+            self.notice.show("Couldn't send \(what): it changed while it was read.", action: retry)
         case .refused:
-            Notice.shared.show("\(Messages.capitalized(computer())) refused \(what).", action: retry)
+            self.notice.show("\(Messages.capitalized(computer())) refused \(what).", action: retry)
         case .unreadable(let name):
-            Notice.shared.show("Couldn't read \(name) on this \(DeviceWord.current).", action: retry)
+            self.notice.show("Couldn't read \(name) on this \(DeviceWord.current).", action: retry)
         case .lost:
-            Notice.shared.show("Couldn't send \(what). \(Messages.notSent(computer()))", action: retry)
+            self.notice.show("Couldn't send \(what). \(Messages.notSent(computer()))", action: retry)
         }
     }
 
@@ -177,7 +220,7 @@ final class FileSender {
         guard !items.isEmpty else { return }
         guard !busy, let withFsBlock else {
             Outgoing.release(items)
-            if busy { Notice.shared.show("Wait for the files on their way to finish.") }
+            if busy { self.notice.show("Wait for the files on their way to finish.") }
             return
         }
         claimed = true
@@ -187,7 +230,8 @@ final class FileSender {
         let landing = Self.landingName()
         let flag = CancelFlag()
         planCancelled = flag
-        Notice.shared.showProgress("Preparing \(what)…", fraction: 0) { flag.set() }
+        clearCancelNote()
+        self.notice.showProgress("Preparing \(what)…", fraction: 0) { flag.set() }
         Task { @MainActor in
             let plan: TarPlan
             do {
@@ -199,14 +243,14 @@ final class FileSender {
                 switch error as? TarPlan.Failure {
                 case .cancelled?:
                     Outgoing.release(items)
-                    Notice.shared.show("Didn't send \(what).", style: .neutral)
+                    self.notice.show("Didn't send \(what).", style: .neutral)
                 case .unreadable(let name)?:
                     // The notice holds this for a few seconds only.
                     let retry = Notice.Action(title: "Try Again") { self.sendTree(items, over: view, onSent: onSent) }
-                    Notice.shared.show("Couldn't read \(name) on this \(DeviceWord.current).", action: retry)
+                    self.notice.show("Couldn't read \(name) on this \(DeviceWord.current).", action: retry)
                 default:
                     Outgoing.release(items)
-                    Notice.shared.show("Nothing in \(what) can be sent.")
+                    self.notice.show("Nothing in \(what) can be sent.")
                 }
                 return
             }
@@ -221,7 +265,7 @@ final class FileSender {
                         start()
                     } else {
                         self.claimed = false
-                        Notice.shared.dismiss()
+                        self.notice.dismiss()
                         Outgoing.release(items)
                     }
                 }
@@ -254,33 +298,37 @@ final class FileSender {
                            withFsBlock: @escaping (_ body: @escaping @MainActor (String, @escaping FsOpen) async throws -> Void) async throws -> Void,
                            over view: UIView?, onSent: @escaping @MainActor ([String], String) -> Void) {
         let to = target()
-        cutOff = false
-        treeCancelPending = false
+        let run = TreeRun(what: what)
+        treeRun = run
         shownPercent = -1
-        background = BackgroundTask(name: "Send files") { [weak self] in
-            guard let self else { return }
-            self.cutOff = true
-            self.cancel()
-        }
+        run.retry = Notice.Action(title: "Try Again") { [weak self, weak view] in self?.sendTree(items, over: view, onSent: onSent) }
+        // Out of background time: stop cleanly instead of being killed mid-file.
+        run.background = BackgroundTask(name: "Send files") { [weak self] in self?.cancel(run, cutOff: true) }
         let cancel: @MainActor () -> Void = { [weak self] in self?.cancel() }
-        Notice.shared.showProgress(Self.treeProgress(what, to: to, fraction: 0), fraction: 0, cancel: cancel)
+        self.notice.showProgress(Self.treeProgress(what, to: to, fraction: 0), fraction: 0, cancel: cancel)
         let control = self.control, sessionID = self.sessionID
         Task { @MainActor in
             defer {
-                self.treeUploader = nil
-                self.claimed = false
-                self.endBackground()
+                if self.treeRun === run {
+                    self.treeRun = nil
+                    self.claimed = false
+                }
+                run.background?.end()
             }
             var dest: String?
             do {
                 try await withFsBlock { blockID, open in
+                    if run.cancelled { throw FsUploader.Failure.cancelled }
                     let up = FsUploader(control: control, sessionID: sessionID, blockID: blockID, open: open)
-                    self.treeUploader = up
-                    if self.cutOff || self.treeCancelPending { up.cancel() }
+                    run.uploader = up
                     dest = try await up.send(plan, to: ServerConnection.treeLanding) { sent, total in
+                        guard !run.cancelled else { return }
                         self.treeProgress(what, to: to, sent: sent, total: total, cancel: cancel)
                     }
                 }
+                // Cancelled while the fs block closed: the server may have put the items in
+                // place, but no path is typed and nothing is said.
+                if run.cancelled { return Self.ended(run, items) }
                 Outgoing.release(items)
                 let base = (dest ?? ServerConnection.treeLanding) + "/" + landing + "/"
                 var done = SendTarget.done([what], to: to)
@@ -288,9 +336,16 @@ final class FileSender {
                 UIAccessibility.post(notification: .announcement, argument: done)
                 onSent(items.map { base + $0.name }, done)
             } catch {
+                // The Cancel said so already.
+                if run.cancelled { return Self.ended(run, items) }
                 self.treeFailed(error, items: items, what: what, to: to, over: view, onSent: onSent)
             }
         }
+    }
+
+    /// A cancelled tree send's task is over: what it holds goes, unless Try Again needs it.
+    private static func ended(_ run: TreeRun, _ items: [Outgoing]) {
+        if !run.cutOff { Outgoing.release(items) }
     }
 
     nonisolated static func treeProgress(_ what: String, to target: String, fraction: Double) -> String {
@@ -303,7 +358,7 @@ final class FileSender {
         let pct = Int(fraction * 100)
         guard pct != shownPercent else { return }
         shownPercent = pct
-        Notice.shared.showProgress(Self.treeProgress(what, to: to, fraction: fraction), fraction: fraction, cancel: cancel)
+        self.notice.showProgress(Self.treeProgress(what, to: to, fraction: fraction), fraction: fraction, cancel: cancel)
     }
 
     private func treeFailed(_ error: Error, items: [Outgoing], what: String, to: String, over view: UIView?,
@@ -314,30 +369,28 @@ final class FileSender {
             // The fs block couldn't be made: the connection, or a server that changed.
             if (error as? RexError)?.code == "not_found" || (error as? RexError)?.code == "method_not_found" {
                 Outgoing.release(items)
-                return Notice.shared.show(Messages.updateRex(self.computer(), to: "send folders"))
+                return self.notice.show(Messages.updateRex(self.computer(), to: "send folders"))
             }
-            return Notice.shared.show("Couldn't send \(what). \(Messages.notSent(self.computer()))", action: retry)
+            return self.notice.show("Couldn't send \(what). \(Messages.notSent(self.computer()))", action: retry)
         }
         switch f {
-        case .cancelled where cutOff:
-            Notice.shared.show("Sending \(what) stopped in the background.", action: retry)
         case .cancelled:
+            // Only `cancel(run)` cancels an fs upload, and it has said so.
             Outgoing.release(items)
-            Notice.shared.show("Didn't send \(what).", style: .neutral)
         case .noRoom:
             Outgoing.release(items)
-            Notice.shared.show("\(computer) doesn't have room for \(what).")
+            self.notice.show("\(computer) doesn't have room for \(what).")
         case .unconfirmed:
             Outgoing.release(items)
-            Notice.shared.show("Sent \(what), but \(to) didn't confirm it. \(Messages.sentUnknown)")
+            self.notice.show("Sent \(what), but \(to) didn't confirm it. \(Messages.sentUnknown)")
         case .changed(let name):
-            Notice.shared.show("Couldn't send \(what): \(name) changed while it was read.", action: retry)
+            self.notice.show("Couldn't send \(what): \(name) changed while it was read.", action: retry)
         case .unreadable(let name):
-            Notice.shared.show("Couldn't read \(name) on this \(DeviceWord.current).", action: retry)
+            self.notice.show("Couldn't read \(name) on this \(DeviceWord.current).", action: retry)
         case .refused, .brokeRule:
-            Notice.shared.show("\(computer) refused \(what).", action: retry)
+            self.notice.show("\(computer) refused \(what).", action: retry)
         case .lost:
-            Notice.shared.show("Couldn't send \(what). \(Messages.notSent(self.computer()))", action: retry)
+            self.notice.show("Couldn't send \(what). \(Messages.notSent(self.computer()))", action: retry)
         }
     }
 

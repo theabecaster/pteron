@@ -288,6 +288,120 @@ final class FsTransferTests: XCTestCase {
         XCTAssertTrue(socket.closedByClient)
     }
 
+    // MARK: Cancelling an upload
+
+    /// A slow link: the start's answer is still on its way at the cancel. The upload ends at
+    /// once, and the answer that comes later opens nothing: its ticket is never used.
+    func testCancelWhileTheStartIsAnsweredEndsAtOnce() async throws {
+        let link = link()
+        link.held = [FsBlock.upload]
+        var opened = 0
+        let up = uploader(link, [FsFakeSocket()], opened: { opened = $0 })
+        let plan = try plan()
+        let task = Task { try await up.send(plan, to: "/tmp") { _, _ in } }
+        let asked = await eventually { link.waitingCount == 1 }
+        XCTAssertTrue(asked)
+        up.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsUploader.Failure, .cancelled)
+        }
+        // The server's late answer, with a ticket: dropped.
+        link.release()
+        await settle()
+        XCTAssertEqual(opened, 0)
+    }
+
+    /// A cancel before the upload starts asks the server for nothing.
+    func testCancelBeforeTheUploadStartsAsksForNothing() async throws {
+        let link = link()
+        let up = uploader(link, [FsFakeSocket()])
+        up.cancel()
+        do {
+            _ = try await up.send(try plan(), to: "/tmp") { _, _ in }
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsUploader.Failure, .cancelled)
+        }
+        XCTAssertEqual(link.count(FsBlock.upload), 0)
+    }
+
+    /// A slow link: the data connection is still on its way at the cancel. The upload ends at
+    /// once, and the connection is closed when it comes, before any byte goes.
+    func testCancelWhileTheUploadsConnectionOpensClosesItWhenItComes() async throws {
+        let link = link(), socket = FsFakeSocket()
+        var handshake: CheckedContinuation<Void, Never>?
+        let up = FsUploader(link: link, sessionID: "session:s", blockID: "block:fs") { _ in
+            await withCheckedContinuation { handshake = $0 }
+            return socket
+        }
+        let plan = try plan()
+        let task = Task { try await up.send(plan, to: "/tmp") { _, _ in } }
+        let opening = await eventually { handshake != nil }
+        XCTAssertTrue(opening)
+        up.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsUploader.Failure, .cancelled)
+        }
+        XCTAssertFalse(socket.closedByClient)
+        handshake?.resume()
+        let closed = await eventually { socket.closedByClient }
+        XCTAssertTrue(closed)
+        XCTAssertEqual(socket.messageCount, 0)
+    }
+
+    /// Cancel at 100%: the end has gone out and the server is still putting the archive in
+    /// place (13 s for 3,000 small files, probed). The upload ends at once as cancelled, never as
+    /// sent, so the caller types no path; closing the fs block then stops the server.
+    func testCancelAfterTheEndEndsAtOnceAndConfirmsNothing() async throws {
+        let link = link(), socket = FsFakeSocket()
+        socket.closeOnEnd = nil
+        let up = uploader(link, [socket])
+        let plan = try plan()
+        let task = Task { try await up.send(plan, to: "/tmp") { _, _ in } }
+        let ended = await eventually { socket.sawEnd }
+        XCTAssertTrue(ended)
+        up.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsUploader.Failure, .cancelled)
+        }
+        XCTAssertTrue(socket.closedByClient)
+    }
+
+    /// A lost stream waits a second before it starts over. A cancel in that pause ends the upload
+    /// at once, and nothing starts again.
+    func testCancelInThePauseBeforeARetryEndsAtOnce() async throws {
+        let link = link(), broken = FsFakeSocket()
+        broken.breakAfter = 10_000
+        let up = uploader(link, [broken, FsFakeSocket()])
+        var pause: CheckedContinuation<Void, Never>?
+        up.sleep = { d in
+            if d == .seconds(1) { await withCheckedContinuation { pause = $0 } } else { await Task.yield() }
+        }
+        let plan = try plan()
+        let task = Task { try await up.send(plan, to: "/tmp") { _, _ in } }
+        let pausing = await eventually { pause != nil }
+        XCTAssertTrue(pausing)
+        up.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsUploader.Failure, .cancelled)
+        }
+        pause?.resume()
+        await settle()
+        XCTAssertEqual(link.count(FsBlock.upload), 1)
+    }
+
     // MARK: Download
 
     private func downloader(_ link: FakeLink, _ socket: FsFakeSocket) -> FsDownloader {

@@ -228,6 +228,11 @@ throwaway session, 2026-11-27.
   of its own, `pteron-<12 hex>`, so nothing is ever replaced.
   - Nothing appears at the destination before the end: a stream closed early (1000 included) or
     dropped leaves the destination as it was.
+  - After the end the server writes the archive into `/tmp/.rex-fs-<id>` and moves it to the
+    destination when done, about 220 entries a second (13 s for 3,005 small files, probed
+    2026-11-27). Meanwhile `block.close` answers at once and stops it (the stream closes with
+    4000, the staging folder goes, nothing lands); a client that closes its data connection
+    doesn't stop it. `upload_begin` answers at once: nothing is walked.
   - An existing folder is merged into and an existing file replaced, silently: why the app
     never uploads into a folder that may hold the same names.
   - A top-level count other than `roots`, an entry with `..` or an absolute path, and an entry
