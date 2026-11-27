@@ -154,7 +154,9 @@ final class EchoRaceTests: XCTestCase {
         }
         core.sync()
         seen.stop.store(true, ordering: .relaxed)
-        while !thread.isFinished { Thread.sleep(forTimeInterval: 0.005) }
+        let end = Date().addingTimeInterval(10)
+        while !thread.isFinished, Date() < end { Thread.sleep(forTimeInterval: 0.005) }
+        XCTAssertTrue(thread.isFinished, "the frame thread did not stop within 10 s of being told to")
 
         XCTAssertEqual(seen.faults.withLock { $0 }, [], "no frame pairs a guess with rows of another moment (seed \(seed))")
         XCTAssertGreaterThan(seen.frames.load(ordering: .relaxed), 100)

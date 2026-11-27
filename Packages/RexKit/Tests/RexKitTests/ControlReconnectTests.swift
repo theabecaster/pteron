@@ -123,11 +123,8 @@ final class ControlReconnectTests: XCTestCase {
         XCTAssertNotEqual(control.state, .connected)
 
         // `RexControl` retries by itself (after 1 s); the observer hears when it is back.
-        var back = false
-        for _ in 0..<500 where !back {
-            back = connects == 2
-            if !back { try? await Task.sleep(for: .milliseconds(10)) }
-        }
+        let back = await waitFor({ connects == 2 }, seconds: 5)
+        XCTAssertTrue(back, "the connection was not back within 5 s")
         XCTAssertEqual(connects, 2)
         XCTAssertEqual(once, 1, "an observer that returned false is gone")
         XCTAssertEqual(control.state, .connected)

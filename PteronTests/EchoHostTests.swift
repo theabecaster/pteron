@@ -45,7 +45,8 @@ final class EchoHostTests: XCTestCase {
     }
 
     private func wait(_ what: String, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<2500 {
+        let giveUp = ContinuousClock.now + .seconds(10)
+        for _ in 0..<2500 where ContinuousClock.now < giveUp {
             if condition() { return }
             try? await Task.sleep(for: .milliseconds(2))
         }
@@ -492,7 +493,8 @@ final class EchoHostTests: XCTestCase {
 
     private func assertReleased(_ held: Held, gate: EchoGate?, _ what: String, file: StaticString = #filePath, line: UInt = #line) async {
         var turns = 0
-        while !held.alive.isEmpty || (gate?.watcherCount ?? 0) > 0, turns < 1500 {
+        let giveUp = ContinuousClock.now + .seconds(10)
+        while !held.alive.isEmpty || (gate?.watcherCount ?? 0) > 0, turns < 1500, ContinuousClock.now < giveUp {
             turns += 1
             try? await Task.sleep(for: .milliseconds(2))
         }

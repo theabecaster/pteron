@@ -68,7 +68,8 @@ final class ProgramFocusHostTests: XCTestCase {
         window = nil
         // The next test class starts with none of this one's panes left.
         var turns = 0
-        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500 {
+        let giveUp = ContinuousClock.now + .seconds(10)
+        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500, ContinuousClock.now < giveUp {
             turns += 1
             try? await Task.sleep(for: .milliseconds(2))
         }

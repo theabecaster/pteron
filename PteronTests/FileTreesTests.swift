@@ -151,7 +151,8 @@ final class FileTreesTests: XCTestCase {
             ["block_id": "block:shell", "flavor": "com.superlogical.terminal.shell", "label": "shell"],
         ]
         k.serverSynced(fake)
-        for _ in 0..<100 where ledger.sessions(server: fake.id) != [] { try? await Task.sleep(for: .milliseconds(10)) }
+        let giveUp = ContinuousClock.now + .seconds(10)
+        for _ in 0..<100 where ledger.sessions(server: fake.id) != [] && ContinuousClock.now < giveUp { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(fake.calls.contains("inOrder block.close block:old"), "\(fake.calls)")
         XCTAssertFalse(fake.calls.contains { $0.contains("other-phone") || $0.contains("tunnel") || $0.contains("shell") && $0.contains("close") })
         XCTAssertEqual(ledger.sessions(server: fake.id), [])

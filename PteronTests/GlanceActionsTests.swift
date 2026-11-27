@@ -302,7 +302,8 @@ import Testing
         let b = actions(slow)
         let again = Self.action(id: "tap-2")
         async let first = b.handle(again)
-        for _ in 0..<50 where slow.written.isEmpty { try? await Task.sleep(nanoseconds: 2_000_000) }
+        let giveUp = ContinuousClock.now + .seconds(10)
+        for _ in 0..<50 where slow.written.isEmpty && ContinuousClock.now < giveUp { try? await Task.sleep(nanoseconds: 2_000_000) }
         #expect(await b.handle(again) == .unconfirmed)
         _ = await first
         #expect(slow.written.count == 1)

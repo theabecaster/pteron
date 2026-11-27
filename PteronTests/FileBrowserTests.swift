@@ -42,7 +42,8 @@ final class StandInFolders: DirSource {
 
 @MainActor
 private func settled(_ condition: @MainActor () -> Bool) async -> Bool {
-    for _ in 0..<400 {
+    let giveUp = ContinuousClock.now + .seconds(10)
+    for _ in 0..<400 where ContinuousClock.now < giveUp {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(10))
     }

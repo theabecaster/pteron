@@ -28,7 +28,8 @@ final class CatchUpFenceHostTests: XCTestCase {
         window?.isHidden = true
         window = nil
         var turns = 0
-        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500 {
+        let giveUp = ContinuousClock.now + .seconds(10)
+        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500, ContinuousClock.now < giveUp {
             turns += 1
             try? await Task.sleep(for: .milliseconds(2))
         }

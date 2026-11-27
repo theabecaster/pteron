@@ -470,7 +470,8 @@ final class PushWorld {
 
     /// Waits for work that started by itself.
     func eventually(_ done: () -> Bool) async {
-        for _ in 0..<400 where !done() { try? await Task.sleep(nanoseconds: 5_000_000) }
+        let giveUp = ContinuousClock.now + .seconds(10)
+        for _ in 0..<400 where !done() && ContinuousClock.now < giveUp { try? await Task.sleep(nanoseconds: 5_000_000) }
     }
 
     /// Long enough for anything that was going to happen by itself to have happened.

@@ -363,7 +363,8 @@ final class PreviewBrowserTests: XCTestCase {
             web != nil || content != nil || configuration != nil || shown != nil || done != nil || more != nil || menu != nil
                 || title != nil || !buttons.allObjects.isEmpty
         }
-        for _ in 0..<200 where left() {
+        let giveUp = ContinuousClock.now + .seconds(20)
+        for _ in 0..<200 where left() && ContinuousClock.now < giveUp {
             try? await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertNil(browser, "the browser")

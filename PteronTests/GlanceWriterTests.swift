@@ -33,7 +33,8 @@ import Testing
         }
 
         func eventually(_ done: () -> Bool) async {
-            for _ in 0..<400 where !done() { try? await Task.sleep(nanoseconds: 5_000_000) }
+            let giveUp = ContinuousClock.now + .seconds(10)
+            for _ in 0..<400 where !done() && ContinuousClock.now < giveUp { try? await Task.sleep(nanoseconds: 5_000_000) }
         }
 
         /// Lets a timer that was just set reach its sleep, moves the clock, and lets what woke

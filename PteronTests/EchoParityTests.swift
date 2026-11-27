@@ -48,7 +48,8 @@ final class EchoParityTests: XCTestCase {
     /// The panes of a run are gone when it ends.
     override func tearDown() async throws {
         var turns = 0
-        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500 {
+        let giveUp = ContinuousClock.now + .seconds(10)
+        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500, ContinuousClock.now < giveUp {
             turns += 1
             try? await Task.sleep(for: .milliseconds(2))
         }
@@ -56,7 +57,8 @@ final class EchoParityTests: XCTestCase {
     }
 
     private func wait(_ what: String, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<4000 {
+        let giveUp = ContinuousClock.now + .seconds(16)
+        for _ in 0..<4000 where ContinuousClock.now < giveUp {
             if condition() { return }
             try? await Task.sleep(for: .milliseconds(2))
         }

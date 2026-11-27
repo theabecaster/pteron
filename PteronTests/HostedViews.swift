@@ -33,7 +33,8 @@ enum Hosted {
 
     /// Lets the window lay out until `done`, for up to 3 s. True when it was done.
     static func settle(_ done: () -> Bool) async -> Bool {
-        for _ in 0..<30 {
+        let giveUp = ContinuousClock.now + .seconds(10)
+        for _ in 0..<30 where ContinuousClock.now < giveUp {
             if done() { return true }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }

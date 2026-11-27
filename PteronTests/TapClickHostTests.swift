@@ -64,14 +64,16 @@ final class TapClickHostTests: XCTestCase {
         window = nil
         // The next test class starts with none of this one's panes left.
         var turns = 0
-        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500 {
+        let giveUp = ContinuousClock.now + .seconds(10)
+        while GhosttyRenderThread.shared.paneCount > panesBefore, turns < 1500, ContinuousClock.now < giveUp {
             turns += 1
             try? await Task.sleep(for: .milliseconds(2))
         }
     }
 
     private func wait(_ what: String, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<2500 {
+        let giveUp = ContinuousClock.now + .seconds(10)
+        for _ in 0..<2500 where ContinuousClock.now < giveUp {
             if condition() { return }
             try? await Task.sleep(for: .milliseconds(2))
         }

@@ -265,7 +265,8 @@ final class ConnectionLogTests: XCTestCase {
         let log = makeLog(flushDelay: 0.05)
         log.record(.connecting, server: "A")
         var size = 0
-        for _ in 0..<400 where size == 0 {
+        let end = ContinuousClock.now + .seconds(5)
+        while size == 0, ContinuousClock.now < end {
             try? await Task.sleep(for: .milliseconds(5))
             size = (try? Data(contentsOf: file))?.count ?? 0
         }

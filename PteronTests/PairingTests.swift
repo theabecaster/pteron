@@ -811,7 +811,8 @@ struct PairingTests {
         server.sessions = [SessionEntry(id: "s1", label: "api")]
         server.views = ["s1": view("s1", active: "w1")]
         server.phase = .online
-        for _ in 0..<100 where model.openRequest == nil { try await Task.sleep(nanoseconds: 20_000_000) }
+        let giveUp = ContinuousClock.now + .seconds(10)
+        for _ in 0..<100 where model.openRequest == nil && ContinuousClock.now < giveUp { try await Task.sleep(nanoseconds: 20_000_000) }
         #expect(model.openRequest?.selection.serverID == config.id)
     }
 

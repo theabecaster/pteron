@@ -339,15 +339,26 @@ final class TwicePongTask: PongSending, @unchecked Sendable {
     }
 }
 
-/// Waits until `condition` holds; false after two seconds.
+/// Waits until `condition` holds; false after 2000 polls a millisecond apart (about two seconds),
+/// or after `eventuallyLimit` of real time, whichever comes first. The polls alone are no bound:
+/// on a busy build Mac each sleep can last far longer than asked, and a condition that never
+/// holds then kept a gate waiting for 11 minutes. When it gives up it says where it waited.
 @MainActor
-func eventually(_ condition: @MainActor () -> Bool) async -> Bool {
-    for _ in 0..<2000 {
+func eventually(file: StaticString = #fileID, line: UInt = #line, _ condition: @MainActor () -> Bool) async -> Bool {
+    let start = ContinuousClock.now
+    var polls = 0
+    while polls < 2000, ContinuousClock.now - start < eventuallyLimit {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(1))
+        polls += 1
     }
-    return condition()
+    if condition() { return true }
+    print("eventually: the condition at \(file):\(line) did not hold after \(polls) polls in \(ContinuousClock.now - start)")
+    return false
 }
+
+/// The most real time one `eventually` waits.
+let eventuallyLimit: Duration = .seconds(10)
 
 /// Lets everything that is ready to run finish, to check that nothing more happens.
 @MainActor

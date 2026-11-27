@@ -514,19 +514,27 @@ final class StreamReconnectTests: XCTestCase {
         link.plans = [.silent]
         let sink = Sink()
         let (stream, _) = makeStream(link: link, sink: sink)
+        // The handshake stays unanswered until the test answers it, so its deadline must not
+        // pass by itself: on a slow Mac the real 10 s could pass first, the stream would start
+        // again on a new ticket, and the count below would never be 2. It ends when the
+        // handshake does (the task is cancelled).
+        stream.handshakeSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
         stream.start()
-        _ = await eventually { link.sockets.first?.isHello == true }
+        let hello = await eventually { link.sockets.first?.isHello == true }
+        XCTAssertTrue(hello, "no HELLO went out on the first socket")
+        guard hello else { return }
         // The handshake is out. A resync now would close it and ask for a second ticket.
         stream.resync()
         await settle()
-        XCTAssertEqual(link.count("data.connect"), 1)
-        XCTAssertFalse(link.sockets[0].closed)
+        XCTAssertEqual(link.count("data.connect"), 1, "a resync during the handshake asked for a ticket")
+        XCTAssertFalse(link.sockets[0].closed, "a resync during the handshake closed it")
         link.sockets[0].push(FakeLink.welcome())
         let live = await eventually { sink.statuses.last == .live }
-        XCTAssertTrue(live)
+        XCTAssertTrue(live, "the welcome did not make the stream live")
+        guard live else { return }
         stream.resync()
         let again = await eventually { link.count("data.connect") == 2 && sink.statuses.last == .live }
-        XCTAssertTrue(again)
+        XCTAssertTrue(again, "after the resync: \(link.count("data.connect")) tickets, status \(String(describing: sink.statuses.last))")
         XCTAssertTrue(link.sockets[0].closed)
     }
 
