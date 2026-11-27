@@ -5,7 +5,7 @@ import UIKit
 /// field, for writing a whole message with autocorrect, capitals, selection and dictation, and
 /// sending it to the pane at once. The key bar shows it while compose is open for its pane and
 /// keeps its height fixed, so typing never resizes the panes; longer text scrolls inside it.
-/// A grab handle at the top closes it with a drag down, + opens the attach menu and ↑ sends.
+/// A grab handle across the top closes it with a drag down, + opens the attach menu and ↑ sends.
 @MainActor
 final class ComposeCard: UIView, UITextViewDelegate, UIGestureRecognizerDelegate {
     let field = ComposeField()
@@ -15,6 +15,9 @@ final class ComposeCard: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     private let placeholderLabel = UILabel()
     private let attachButton = UIButton(type: .custom)
     private let sendButton = UIButton(type: .custom)
+    private let pan = UIPanGestureRecognizer()
+    /// Where the finger touched down on the card, for the handle's drag.
+    private var dragStart: CGPoint?
     private var theme: TermTheme = ThemeStore.fallback
 
     /// ↑ (or ⌘Return on a hardware keyboard) with text in the field.
@@ -87,7 +90,8 @@ final class ComposeCard: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         addSubview(sendButton)
         for b in [attachButton, sendButton] { b.layer.cornerRadius = Self.button / 2 }
 
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+        pan.addTarget(self, action: #selector(panned(_:)))
+        pan.maximumNumberOfTouches = 1
         pan.delegate = self
         addGestureRecognizer(pan)
         accessibilityElements = [grab, field, attachButton, sendButton]
@@ -136,9 +140,11 @@ final class ComposeCard: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         super.layoutSubviews()
         glass.frame = bounds
         let b = Self.button
+        // The handle's strip: the card's whole width, `ComposeDrag.handleHeight` tall. It lies
+        // under the field and the buttons, which take their own taps.
+        grab.frame = CGRect(x: 0, y: 0, width: bounds.width, height: ComposeDrag.handleHeight)
         if compact {
             handle.frame = CGRect(x: (bounds.width - 28) / 2, y: 3, width: 28, height: 4)
-            grab.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 10)
             let y = (bounds.height - b) / 2
             attachButton.frame = CGRect(x: 8, y: y, width: b, height: b)
             sendButton.frame = CGRect(x: bounds.width - 8 - b, y: y, width: b, height: b)
@@ -146,7 +152,6 @@ final class ComposeCard: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             field.frame = CGRect(x: lo, y: 8, width: max(0, sendButton.frame.minX - 6 - lo), height: bounds.height - 12)
         } else {
             handle.frame = CGRect(x: (bounds.width - 36) / 2, y: 6, width: 36, height: 5)
-            grab.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 20)
             let row = bounds.height - 8 - b
             attachButton.frame = CGRect(x: 10, y: row, width: b, height: b)
             sendButton.frame = CGRect(x: bounds.width - 10 - b, y: row, width: b, height: b)
@@ -174,42 +179,97 @@ final class ComposeCard: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
 
     // MARK: The handle
 
-    /// Starts on the card outside the field (the handle, the margins), going down.
-    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-        guard let pan = g as? UIPanGestureRecognizer else { return true }
-        if field.frame.contains(pan.location(in: self)) { return false }
-        let v = pan.velocity(in: self)
-        return v.y > abs(v.x)
+    /// The handle's strip on the card, where a drag down closes compose.
+    var handleArea: CGRect { grab.frame }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if g === pan, pan.state == .possible { dragStart = touch.location(in: self) }
+        return true
     }
 
-    @objc private func panned(_ pan: UIPanGestureRecognizer) {
-        let dy = max(0, pan.translation(in: self).y)
-        let follows = !UIAccessibility.isReduceMotionEnabled
+    /// The handle's drag, as UIKit is about to begin it: it started in the handle's strip and
+    /// goes down (`ComposeDrag.begins`). Measured from where the finger touched down, since UIKit
+    /// begins a pan only after the finger has moved about 10 pt and counts its translation from
+    /// there: a slow drag has none yet.
+    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        guard g.view === self, let pan = g as? UIPanGestureRecognizer else { return super.gestureRecognizerShouldBegin(g) }
+        let now = pan.location(in: self)
+        let start = dragStart ?? CGPoint(x: now.x - pan.translation(in: self).x, y: now.y - pan.translation(in: self).y)
+        return beginsDrag(from: start, to: now, velocity: pan.velocity(in: self))
+    }
+
+    /// `ComposeDrag.begins` on this card as laid out: the handle's strip, short of the buttons.
+    func beginsDrag(from start: CGPoint, to now: CGPoint, velocity: CGPoint) -> Bool {
+        let buttons = [attachButton, sendButton].filter { !$0.isHidden }.map(\.frame)
+        return ComposeDrag.begins(from: start, to: now, velocity: velocity, handle: handleArea, buttons: buttons)
+    }
+
+    /// The field's own pans (its scrolling) wait for the handle's: a drag down that starts in the
+    /// strip over the field's top edge is the handle's, any other is the field's once the
+    /// handle's fails, which it does as soon as UIKit would begin it.
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        g === pan && other is UIPanGestureRecognizer && other.view?.isDescendant(of: field) == true
+    }
+
+    @objc func panned(_ pan: UIPanGestureRecognizer) {
+        let now = pan.location(in: self)
+        let start = dragStart ?? CGPoint(x: now.x - pan.translation(in: self).x, y: now.y - pan.translation(in: self).y)
+        let drop = max(0, now.y - start.y)
         switch pan.state {
-        case .changed:
-            if follows { transform = CGAffineTransform(translationX: 0, y: dy * 0.6) }
+        case .began, .changed:
+            // The card follows the finger down, from where it touched down.
+            if !UIAccessibility.isReduceMotionEnabled { transform = CGAffineTransform(translationX: 0, y: drop) }
         case .ended:
-            if dy > Self.closeDrag || pan.velocity(in: self).y > 700 {
+            dragStart = nil
+            if ComposeDrag.closes(drop: drop, speed: pan.velocity(in: self).y) {
                 transform = .identity
                 onClose?()
             } else {
                 settle()
             }
         case .cancelled, .failed:
+            dragStart = nil
             settle()
         default:
             break
         }
     }
 
-    /// How far down the handle goes before compose closes.
-    static let closeDrag: CGFloat = 32
-
     private func settle() {
         guard transform != .identity else { return }
         UIView.animate(withDuration: 0.18, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
             self.transform = .identity
         }
+    }
+}
+
+/// The handle's drag, decided from points so it is tested (docs/terminal.md, Compose).
+enum ComposeDrag {
+    /// The handle's strip across the card's top: generous, for a thumb.
+    static let handleHeight: CGFloat = 30
+    /// How far the finger goes down before letting go closes compose.
+    static let closeDistance: CGFloat = 32
+    /// A flick down at least this fast (points a second) closes it from any distance.
+    static let closeSpeed: CGFloat = 700
+
+    /// Whether a drag is the handle's, when UIKit is about to begin it: it started in the
+    /// handle's strip, not on a button there and not in the field below it, and goes down more
+    /// than sideways. The movement since the touch went down decides; the velocity only breaks a
+    /// tie, when the movement is level or exactly diagonal.
+    static func begins(from start: CGPoint, to now: CGPoint, velocity: CGPoint, handle: CGRect, buttons: [CGRect] = []) -> Bool {
+        guard handle.contains(start), !buttons.contains(where: { $0.contains(start) }) else { return false }
+        return down(CGPoint(x: now.x - start.x, y: now.y - start.y)) ?? down(velocity) ?? false
+    }
+
+    /// Down and more vertical than horizontal; nil when it can't tell (no movement, or exactly
+    /// as much down as sideways).
+    private static func down(_ p: CGPoint) -> Bool? {
+        p.y == abs(p.x) ? nil : p.y > abs(p.x)
+    }
+
+    /// Letting go closes compose past `closeDistance` or on a flick down.
+    static func closes(drop: CGFloat, speed: CGFloat) -> Bool {
+        drop > closeDistance || speed > closeSpeed
     }
 }
 

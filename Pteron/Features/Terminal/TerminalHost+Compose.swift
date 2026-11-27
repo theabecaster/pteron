@@ -5,8 +5,9 @@ import UIKit
 /// the keys, for one pane. Its field takes the keyboard inside the displayed key bar, as find's
 /// accessory field does: the same input view, the key bar as its accessory, so the keyboard stays
 /// where it is. Send writes the message through the pane's one input queue, behind the catch-up
-/// fence, and clears the field. Compose stays open for the pane until ✎ or the handle closes it;
-/// whenever the pane's keyboard comes up meanwhile, the field takes it.
+/// fence, clears the field and closes compose as ✎ does. Compose stays open for the pane until a
+/// send, ✎ or the handle closes it; whenever the pane's keyboard comes up meanwhile, the field
+/// takes it.
 extension TerminalHost {
     /// Called once from `init`.
     func setUpCompose() {
@@ -122,7 +123,8 @@ extension TerminalHost {
     /// Send: the whole message as the program takes a paste (bracketed when it asked for it),
     /// then Return as a write of its own, through the one input queue and behind the catch-up
     /// fence. A multi-line message to a program that takes no bracketed paste would run each
-    /// line, so it is asked about first, as such a paste is (`PasteConfirmation`).
+    /// line, so it is asked about first, as such a paste is (`PasteConfirmation`). Once it went,
+    /// compose closes as ✎ closes it: the terminal takes the keyboard, which stays up.
     func sendCompose() {
         let field = keyBar.compose.field
         // An input method's composition is part of the message as it stands.
@@ -143,6 +145,7 @@ extension TerminalHost {
             // Cleared once it went: a message still waiting for its confirmation stays.
             self.composeSlot.text = ""
             self.keyBar.compose.show(text: "")
+            self.closeCompose()
         }
         guard term.pasteNeedsConfirmation(text) else { return deliver() }
         let answer: @MainActor (Bool) -> Void = { yes in if yes { deliver() } }
@@ -159,12 +162,20 @@ extension TerminalHost {
 
     /// The stream dropped input (the fence's notice): a message sent behind the fence, which
     /// hasn't come down since, never left. It comes back into compose's field if that is empty,
-    /// so it is not lost.
+    /// and compose opens again with it (the send closed it), so it is not lost.
     func composeInputDropped() {
         guard let last = lastComposeSend, CACurrentMediaTime() - last.at < Self.composeRestoreWindow else { return }
         lastComposeSend = nil
         guard composeSlot.text.isEmpty else { return }
         composeSlot.text = last.text
         keyBar.compose.show(text: last.text)
+        guard !composeSlot.open else { return }
+        if covered {
+            // Open under the cover; the field takes the keyboard when the terminal next does.
+            composeSlot.open = true
+            applyComposeSlot()
+        } else {
+            openCompose()
+        }
     }
 }

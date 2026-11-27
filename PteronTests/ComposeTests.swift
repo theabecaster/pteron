@@ -51,7 +51,38 @@ struct ComposeTests {
         #expect(writes.all.first?.then == [0x0d])
         #expect(host.keyBar.compose.field.text.isEmpty, "the field is empty after a send")
         #expect(host.composeSlot.text.isEmpty)
-        #expect(host.composeSlot.open, "compose stays open")
+    }
+
+    @Test func sendClosesComposeAsItsKeyDoesAndClearsTheDraft() {
+        let (host, writes, _) = makeHost()
+        host.openCompose()
+        type(host, "make test")
+        host.sendCompose()
+        #expect(writes.all.count == 1)
+        #expect(!host.composeSlot.open && !host.keyBar.composeOpen && !host.term.composeOpen, "closed as ✎ closes it")
+        #expect(host.keyBar.compose.isHidden)
+        #expect(host.composeSlot.text.isEmpty && host.keyBar.compose.field.text.isEmpty)
+        // Declined: nothing went, so compose stays open with the draft.
+        var answered = false
+        host.confirmPaste = { _, answer in answered = true; answer(false) }
+        host.openCompose()
+        type(host, "echo a\necho b")
+        host.sendCompose()
+        #expect(answered && writes.all.count == 1)
+        #expect(host.composeSlot.open && host.composeSlot.text == "echo a\necho b")
+    }
+
+    @Test func aSendTheFenceDroppedOpensComposeAgainWithIt() {
+        let (host, _, _) = makeHost()
+        host.openCompose()
+        type(host, "keep me")
+        host.sendCompose()
+        #expect(!host.composeSlot.open)
+        // As if the send had gone behind the fence and the fence dropped it.
+        host.lastComposeSend = ("keep me", CACurrentMediaTime())
+        host.composeInputDropped()
+        #expect(host.composeSlot.open && host.keyBar.composeOpen, "open again")
+        #expect(host.keyBar.compose.field.text == "keep me" && host.composeSlot.text == "keep me")
     }
 
     @Test func aMessageToAnAgentIsABracketedPasteThenReturn() {
@@ -194,5 +225,159 @@ struct ComposePlaceholderTests {
         #expect(ComposePlaceholder.text(agent: nil, program: " ", pwd: nil) == "Message")
         #expect(ComposePlaceholder.text(agent: nil, program: nil, pwd: nil) == "Message")
         #expect(ComposePlaceholder.folder("file:///Users/abe/x/") == "~/x")
+    }
+}
+
+/// The handle's drag: when it begins and when letting go closes compose.
+struct ComposeDragTests {
+    private let handle = CGRect(x: 0, y: 0, width: 390, height: ComposeDrag.handleHeight)
+    private let start = CGPoint(x: 195, y: 10)
+
+    private func begins(to dx: CGFloat, _ dy: CGFloat, velocity: CGPoint = .zero, from start: CGPoint? = nil,
+                        buttons: [CGRect] = []) -> Bool {
+        let s = start ?? self.start
+        return ComposeDrag.begins(from: s, to: CGPoint(x: s.x + dx, y: s.y + dy), velocity: velocity, handle: handle, buttons: buttons)
+    }
+
+    @Test func aSlowDragDownBegins() {
+        // UIKit begins a pan about 10 pt from the touch; a slow drag has almost no velocity.
+        #expect(begins(to: 0, 10))
+        #expect(begins(to: 3, 10, velocity: .zero))
+        #expect(begins(to: -4, 11, velocity: CGPoint(x: 0, y: 2)))
+        // Into the field below the handle: it started in the handle.
+        #expect(begins(to: 0, 40))
+    }
+
+    @Test func sidewaysOrUpDoesNotBegin() {
+        #expect(!begins(to: 10, 0))
+        #expect(!begins(to: -10, 3))
+        #expect(!begins(to: 10, 9, velocity: CGPoint(x: 0, y: 900)), "more sideways: the velocity doesn't overrule it")
+        #expect(!begins(to: 0, -10))
+        #expect(!begins(to: 2, -10, velocity: CGPoint(x: 0, y: 300)))
+    }
+
+    @Test func theVelocityOnlyBreaksATie() {
+        #expect(begins(to: 0, 0, velocity: CGPoint(x: 0, y: 40)))
+        #expect(!begins(to: 0, 0, velocity: CGPoint(x: 40, y: 0)))
+        #expect(!begins(to: 0, 0, velocity: .zero))
+        #expect(begins(to: 7, 7, velocity: CGPoint(x: 1, y: 30)))
+        #expect(!begins(to: 7, 7, velocity: CGPoint(x: 30, y: 1)))
+    }
+
+    @Test func startingInTheFieldOrOnAButtonDoesNotBegin() {
+        #expect(!begins(to: 0, 10, from: CGPoint(x: 195, y: 50)), "in the field, below the handle")
+        #expect(!begins(to: 0, 10, from: CGPoint(x: 195, y: -2)))
+        let send = CGRect(x: 346, y: 8, width: 36, height: 36)
+        #expect(!begins(to: 0, 10, from: CGPoint(x: 360, y: 20), buttons: [send]))
+        #expect(begins(to: 0, 10, from: CGPoint(x: 300, y: 20), buttons: [send]))
+    }
+
+    @Test func lettingGoClosesPastTheDistanceOrOnAFlick() {
+        #expect(ComposeDrag.closes(drop: 40, speed: 0))
+        #expect(ComposeDrag.closes(drop: 6, speed: 900))
+        #expect(!ComposeDrag.closes(drop: 14, speed: 40))
+        #expect(!ComposeDrag.closes(drop: 0, speed: 0))
+    }
+}
+
+/// A pan whose touches are scripted: where the finger is, and how fast.
+private final class ScriptedPan: UIPanGestureRecognizer {
+    var at = CGPoint.zero
+    var startAt = CGPoint.zero
+    var speed = CGPoint.zero
+    var scripted: UIGestureRecognizer.State = .possible
+    override var state: UIGestureRecognizer.State {
+        get { scripted }
+        set { scripted = newValue }
+    }
+    override func location(in view: UIView?) -> CGPoint { at }
+    override func translation(in view: UIView?) -> CGPoint { CGPoint(x: at.x - startAt.x, y: at.y - startAt.y) }
+    override func velocity(in view: UIView?) -> CGPoint { speed }
+}
+
+/// The handle on a card laid out as on screen, driven by a scripted finger through the card's
+/// own recognizer methods and into the host, as a drag on the phone is.
+@MainActor
+struct ComposeHandleTests {
+    private func openHost(compact: Bool = false) -> (TerminalHost, ComposeCard) {
+        let control = RexControl(address: "", client: ClientInfo(name: "test", version: "0", label: "test"))
+        let host = TerminalHost(stream: TerminalStream(control: control, sessionID: "s", blockID: "b"), sizing: .mirror,
+                                fontSize: 12, theme: ThemeStore.fallback)
+        host.composeWrite = { _, _ in }
+        host.openCompose()
+        let card = host.keyBar.compose
+        card.compact = compact
+        card.frame = CGRect(x: 0, y: 0, width: 390, height: ComposeCard.height(compact: compact))
+        card.layoutIfNeeded()
+        return (host, card)
+    }
+
+    /// A drag from `from` down by `drop` in `steps` moves, then let go at `release` points a second.
+    /// False when the card's recognizer didn't begin.
+    private func drag(_ card: ComposeCard, from: CGPoint, drop: CGFloat, steps: Int = 8, speed: CGFloat,
+                      release: CGFloat, during: (CGFloat) -> Void = { _ in }) -> Bool {
+        let pan = ScriptedPan()
+        card.addGestureRecognizer(pan)
+        defer { card.removeGestureRecognizer(pan) }
+        pan.startAt = from
+        // UIKit asks about 10 pt in.
+        pan.at = CGPoint(x: from.x, y: from.y + min(10, drop))
+        pan.speed = CGPoint(x: 0, y: speed)
+        guard card.gestureRecognizerShouldBegin(pan) else { return false }
+        pan.scripted = .began
+        card.panned(pan)
+        for i in 1...steps {
+            pan.at = CGPoint(x: from.x, y: from.y + drop * CGFloat(i) / CGFloat(steps))
+            pan.scripted = .changed
+            card.panned(pan)
+            during(pan.at.y - from.y)
+        }
+        pan.speed = CGPoint(x: 0, y: release)
+        pan.scripted = .ended
+        card.panned(pan)
+        return true
+    }
+
+    @Test func aSlowDragDownTheHandleClosesComposeAsItsKeyDoes() {
+        let (host, card) = openHost()
+        card.show(text: "draft")
+        host.composeSlot.text = "draft"
+        let follows = !UIAccessibility.isReduceMotionEnabled
+        var moved: [CGFloat] = []
+        let began = drag(card, from: CGPoint(x: 195, y: 10), drop: 60, speed: 40, release: 30) { _ in moved.append(card.transform.ty) }
+        #expect(began, "a slow drag begins")
+        if follows { #expect(moved.last == 60, "the card follows the finger") } else { #expect(moved.allSatisfy { $0 == 0 }) }
+        #expect(!host.composeSlot.open && !host.keyBar.composeOpen && !host.term.composeOpen, "closed")
+        #expect(card.transform == .identity)
+        #expect(host.composeSlot.text == "draft" && card.field.text == "draft", "the draft stays")
+    }
+
+    @Test func aShortDragSettlesBack() {
+        let (host, card) = openHost()
+        #expect(drag(card, from: CGPoint(x: 195, y: 10), drop: 14, speed: 40, release: 20))
+        #expect(host.composeSlot.open && host.keyBar.composeOpen, "still open")
+    }
+
+    @Test func aFlickClosesIt() {
+        let (host, card) = openHost()
+        #expect(drag(card, from: CGPoint(x: 195, y: 6), drop: 20, steps: 2, speed: 1_400, release: 1_500))
+        #expect(!host.composeSlot.open)
+    }
+
+    @Test func aDragInTheFieldIsTheFields() {
+        let (host, card) = openHost()
+        let inField = CGPoint(x: card.field.frame.midX, y: card.field.frame.midY)
+        #expect(inField.y > ComposeDrag.handleHeight)
+        #expect(!drag(card, from: inField, drop: 60, speed: 40, release: 30))
+        #expect(host.composeSlot.open)
+    }
+
+    @Test func theHandleIsAThumbTallAcrossTheTopOfEitherCard() {
+        for compact in [false, true] {
+            let (host, card) = openHost(compact: compact)
+            #expect(card.handleArea == CGRect(x: 0, y: 0, width: 390, height: 30), "compact \(compact)")
+            #expect(drag(card, from: CGPoint(x: 120, y: 26), drop: 50, speed: 50, release: 10), "compact \(compact)")
+            #expect(!host.composeSlot.open, "compact \(compact)")
+        }
     }
 }

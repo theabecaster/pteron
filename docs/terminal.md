@@ -939,8 +939,12 @@ quotes and dashes are off, so a command or a path stays as typed. Only a tap on 
   shows (a permission prompt, a menu).
 - **The catch-up fence** applies as to any typed key: behind it the message and its Return are
   held together and go as one write only over an exact screen. If the fence drops them, the
-  message comes back into the field, if it is empty, so it is never lost (`composeInputDropped`).
-- **After a send** the field is empty and keeps the keyboard. Nothing else changes.
+  message comes back into the field, if it is empty, and compose opens again with it, so it is
+  never lost (`composeInputDropped`).
+- **After a send** the field is empty and compose closes exactly as a tap on ✎ closes it: the
+  terminal takes the keyboard back in the same key bar, so the keyboard stays up with no flicker,
+  and the panes get one resize, back to the keyboard-up grid. A send that waits for a paste
+  confirmation closes compose only once it goes; declined, compose stays open with the draft.
 - **Keyboard focus.** Opening compose gives the field the keyboard inside the key bar on screen,
   as find's accessory field takes it: the field gets the terminal's input view and the key bar as
   its own accessory, so the keyboard doesn't go down or come up. Closing it gives the keyboard
@@ -965,15 +969,21 @@ quotes and dashes are off, so a command or a path stays as typed. Only a tap on 
   pane too (ctrl then c interrupts), not into the message.
 - **+** opens the attach menu (Files). The server types the files' paths into the pane, as for
   the attach key, so they arrive before the message that follows them.
-- **Open until closed.** Compose stays open for its pane, across tab and pane switches, until ✎
-  or the handle closes it. Each pane has its own (`ComposeSlot`), open or not, with its draft:
+- **Open until closed.** Compose stays open for its pane, across tab and pane switches, until a
+  send, ✎ or the handle closes it. Each pane has its own (`ComposeSlot`), open or not, with its draft:
   kept in memory while the app runs, in `TerminalHostPool`, so a parked or evicted pane keeps it.
   A draft goes with its pane's session or computer, never anywhere else; a pane that closes or a
   connection that drops does nothing to it.
-- **Closing.** ✎ again, or the handle dragged down 32 pt (or flicked). The card follows the
-  finger at 60 % and settles back in 0.18 s when let go short of that; with Reduce Motion it
-  stays put. VoiceOver: the handle is "Close Compose", then the field (its label is the empty
-  text), "Attach" and "Send".
+- **Closing.** A send, ✎ again, or the handle dragged down. The handle is a 30 pt strip across
+  the card's top, on the compact card too, under the field's top edge but not under + or ↑
+  (`ComposeDrag`). A drag that starts there and goes down more than sideways is the handle's,
+  however slowly it moves: the movement since the finger touched down decides, the velocity only
+  breaks a tie, because UIKit begins a pan only after about 10 pt and counts its translation from
+  there. One that starts lower in the field is the field's; the field's own scrolling waits for
+  the handle's drag to fail. Let go past 32 pt, or on a flick down (700 pt/s), and compose closes
+  exactly as ✎ closes it, draft kept; short of that the card settles back in 0.18 s. The card
+  follows the finger; with Reduce Motion it stays put. VoiceOver: the handle is "Close Compose",
+  then the field (its label is the empty text), "Attach" and "Send".
 - **Size.** The card's height is fixed: 112 pt, or one 52 pt row (+, the field, ↑) under a short
   window. Longer text scrolls inside it, so writing never resizes anything. The key bar grows by
   the card and 8 pt, so the keyboard's frame includes the card: the root keeps clear of it

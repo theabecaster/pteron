@@ -78,6 +78,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
         didSet {
             guard composeOpen != oldValue else { return }
             compose.isHidden = !composeOpen
+            compose.transform = .identity
             composeCap?.active = composeOpen
             composeCap?.accessibilityValue = composeOpen ? "Open" : nil
             applySize()
@@ -410,8 +411,12 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback, UIScrollViewDelegate 
         // Keys slip under the capsule's round leading end, and stop straight at the divider.
         clip.layer.cornerRadius = h / 2
         clip.layer.maskedCorners = rtl ? [.layerMaxXMinYCorner, .layerMaxXMaxYCorner] : [.layerMinXMinYCorner, .layerMinXMaxYCorner]
-        compose.frame = CGRect(x: span.lowerBound, y: 0, width: span.upperBound - span.lowerBound,
+        // By bounds and center, which a transform doesn't change: a layout pass while the
+        // handle is dragged leaves the card where the finger has it.
+        let cardFrame = CGRect(x: span.lowerBound, y: 0, width: span.upperBound - span.lowerBound,
                                height: ComposeCard.height(compact: compact))
+        compose.bounds = CGRect(origin: .zero, size: cardFrame.size)
+        compose.center = CGPoint(x: cardFrame.midX, y: cardFrame.midY)
     }
 
     /// The vertical crease in the bar's coordinates, nil without one or out of a window.
