@@ -42,6 +42,27 @@ struct KeyboardInsetTests {
         #expect(pad(CGRect(x: 0, y: 850, width: 402, height: 24)) == 0)
     }
 
+    /// Compose's card is part of the key bar, so it is keyboard room: the panes end at the card's
+    /// top, whether the keyboard reports itself with its accessory or, for a moment, without it.
+    /// Opening it changes the room by the card and its gap, once.
+    @MainActor
+    @Test func composesCardIsKeyboardRoom() {
+        let keys: CGFloat = 297
+        func room(composeOpen: Bool, reportedWithBar: Bool) -> CGFloat {
+            let bar = KeyBar.height(compact: false, composeOpen: composeOpen)
+            let top = phone.maxY - keys - bar
+            let barFrame = CGRect(x: 0, y: top, width: 402, height: bar)
+            let kb = reportedWithBar ? CGRect(x: 0, y: top, width: 402, height: keys + bar)
+                : CGRect(x: 0, y: phone.maxY - keys, width: 402, height: keys)
+            return KeyboardInset.padding(keyboard: kb, keyBar: barFrame, hiding: false, view: phone, window: phone,
+                                         windowSafeBottom: 34)
+        }
+        let open = room(composeOpen: true, reportedWithBar: true)
+        #expect(open == keys + KeyBar.height(compact: false, composeOpen: true) - 34, "the panes end at the card's top")
+        #expect(room(composeOpen: true, reportedWithBar: false) == open, "the bar's top, the card's, is the floor")
+        #expect(open - room(composeOpen: false, reportedWithBar: true) == ComposeCard.height(compact: false) + KeyBar.cardGap)
+    }
+
     @Test func folded() {
         // Folded iPhone Duo: 466 × 678, the system's vertical bar beside the root.
         let w = CGRect(x: 0, y: 0, width: 466, height: 678)

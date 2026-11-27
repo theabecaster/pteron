@@ -25,6 +25,7 @@ import UIKit
 ///   each way); something else sends it away and brings it back (`simctl`).
 /// - `reconnect`: start the pane's stream over, as after a lost connection, and wait until it
 ///   is current again (at most 20 s).
+/// - `compose[:<draft>]`: open Compose with that draft, as ✎ does; `close`: close it, as ✎ again.
 /// - `<step>+<step>`: the steps one after the other with no pause between them, for a tap
 ///   right after a return or a reconnect: `away+tap:3,1`. A `type:` step takes everything
 ///   after it as its text, so it comes last: `tap:3,1+type:a+b` taps and types "a+b".
@@ -72,6 +73,11 @@ enum KeyboardTest {
             host.focusKeyboard()
         case "down":
             host.hideKeyboard()
+        case "compose":
+            if !arg.isEmpty { host.composeSlot.text = arg }
+            host.openCompose()
+        case "close":
+            host.closeCompose()
         case "scroll":
             let scroller = host.term.scroller
             scroller.setOffset(scroller.surface.contentOffset.y + CGFloat(Double(arg) ?? 0), animated: false)
@@ -147,8 +153,11 @@ enum KeyboardTest {
         let bar = host.keyBar
         let barFrame = bar.window.map { w in bar.convert(bar.bounds, to: w.screen.coordinateSpace) }
         let paneBottom = host.window.map { w in host.convert(host.bounds, to: w.screen.coordinateSpace).maxY } ?? -1
-        NSLog("KEYBOARD_TEST %@ kb=%@ bar=%@ paneBottom=%.0f mode=%@", step, rect(keyboardEnd),
-              barFrame.map(rect) ?? "none", paneBottom, host.term.textInputMode?.primaryLanguage ?? "none")
+        let card = host.keyBar.compose
+        let cardFrame = card.isHidden ? nil : card.window.map { w in card.convert(card.bounds, to: w.screen.coordinateSpace) }
+        NSLog("KEYBOARD_TEST %@ kb=%@ bar=%@ card=%@ paneBottom=%.0f compose=%d mode=%@", step, rect(keyboardEnd),
+              barFrame.map(rect) ?? "none", cardFrame.map(rect) ?? "none", paneBottom, host.composeHoldsKeyboard ? 1 : 0,
+              host.term.textInputMode?.primaryLanguage ?? "none")
     }
 
     private static func rect(_ r: CGRect) -> String {
