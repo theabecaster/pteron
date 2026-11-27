@@ -233,7 +233,9 @@ struct WindowScreen: View {
         // as far as the window's corners allow, to the edge where they allow it; with it up it
         // keeps to the safe area and ends at the keyboard's top as before (`PaneBottom`).
         let look = canvasLook(w, p)
-        let bottom = PaneBottom(window: windowBottom, keyboardRoom: keyboardRoom, card: composeRoom,
+        // Read here: the measure below runs off the main actor.
+        let room = keyboardRoom, card = composeRoom
+        let bottom = PaneBottom(window: windowBottom, keyboardRoom: room, card: card,
                                 padding: PaneLayout.bottomPadding(splits: look.splits, rounded: mode != .narrow),
                                 tolerance: PaneBottom.tolerance(fontSize: prefs.fontSize), reaches: reachesBottom)
         return ZStack {
@@ -257,7 +259,7 @@ struct WindowScreen: View {
             // to the safe area, so a fold or a turn that changes only the home indicator's inset
             // leaves its size as it was.
             .onGeometryChange(for: PaneBottom.Measure.self) {
-                PaneBottom.Measure(size: $0.size, restReach: bottom.restReach, room: keyboardRoom, card: composeRoom)
+                PaneBottom.Measure(size: $0.size, restReach: bottom.restReach, room: room, card: card)
             } action: { m in
                 // The room, the inset and the header as this layout had them: read with the size
                 // they made.

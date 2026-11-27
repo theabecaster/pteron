@@ -98,7 +98,7 @@ struct KeyboardCoverLayoutTests {
         #expect(PaneLayout.restCanvas(now: .zero, room: 285) == .zero)
     }
 
-    @Test func composesCardStaysInTheRestCanvas() {
+    @MainActor @Test func composesCardStaysInTheRestCanvas() {
         // iPhone 17: 744 pt with the keyboard down. Up with Compose's card (120 pt of its 468 pt):
         // the grid fits above the card, and closing Compose gives the same 744 pt as before.
         let card = ComposeCard.height(compact: false) + KeyBar.cardGap
