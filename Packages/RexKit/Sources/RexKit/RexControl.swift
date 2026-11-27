@@ -47,8 +47,8 @@ public final class RexControl {
 
     /// The newest API revision this client speaks. The hello sends it with no `api_min_revision`,
     /// so a server on any revision from 0 up to this one connects, and a newer server translates
-    /// down to it.
-    public nonisolated static let apiRevision = 18
+    /// down to it. Features newer than revision 13 ask `negotiatedRevision` (`RexAPI`).
+    public nonisolated static let apiRevision = 19
 
     /// The server address as configured.
     public let address: String
@@ -72,6 +72,10 @@ public final class RexControl {
     /// Something for the connection log that is not a change of state: the welcome's word on the
     /// client, a stream's refused handshake or ticket. The owner writes it (`ConnectionReporter.note`).
     public var onNote: ((ConnectionEvent) -> Void)?
+    /// The largest message the server takes (`limits.max_message_bytes`, from the latest
+    /// welcome; 64 KiB, the smallest a server may set, until one says). A request that is larger
+    /// closes the connection with 1009, so `send` fails such a request alone, unsent, and
+    /// `TerminalStream` cuts long input into writes under it (`WriteChunks`).
     public private(set) var maxMessageBytes = 65536
     /// The API revision this connection uses, from the latest welcome (`api_revision`; a server
     /// that leaves it out speaks revision 0). 0 before the first welcome.
@@ -1362,17 +1366,37 @@ public final class RexControl {
         return e
     }
 
+    /// `message_too_large`, never sent, for a request of `bytes` over the server's `limit`. Not
+    /// `neverSent`: that tells a caller it may send the request again, which can't help this one.
+    /// Input counts it as refused and drops it; nothing that `TerminalStream` cuts gets here.
+    nonisolated static func tooLarge(_ method: String, bytes: Int, limit: Int) -> RexError? {
+        guard bytes > limit else { return nil }
+        return RexError(code: "message_too_large",
+                        message: "\(method) is \(bytes) bytes, over the server's limit of \(limit).", status: 413)
+    }
+
     /// Registers `answer` for a new request and hands the request to the socket, in this turn.
+    /// A request over `maxMessageBytes` is answered at once with `message_too_large` and never
+    /// leaves. `URLSessionWebSocketTask` sends each message whole, in one frame, and offers no
+    /// fragments, so a ping waits behind a message on its way: the requests stay small instead
+    /// (the largest, typed input, is cut to 64 KiB writes by `TerminalStream`).
     private func send(_ method: String, _ payload: JSONObject?, on t: any ControlSocket,
                       answer: @escaping (Result<DecodedJSON, Error>) -> Void) {
         nextID += 1
         let id = String(nextID)
         var req: JSONObject = ["type": "request", "id": id, "method": method]
         if let payload { req["payload"] = payload }
+        let text = JSONCodec.encode(req)
+        // Over the limit the server would close the connection with 1009, failing every call
+        // out and every stream with it. Only this request fails, here.
+        if let e = Self.tooLarge(method, bytes: text.utf8.count, limit: maxMessageBytes) {
+            answer(.failure(e))
+            return
+        }
         pending[id] = answer
         sentAt[id] = clock.now
         armWatchdog()
-        t.send(.string(JSONCodec.encode(req))) { err in
+        t.send(.string(text)) { err in
             guard let err else { return }
             Task { @MainActor in
                 // The socket didn't take the message, so the server never saw it. (A request
@@ -1394,7 +1418,9 @@ public final class RexControl {
         guard let t = task, state == .connected else { return false }
         nextID += 1
         let req: JSONObject = ["type": "request", "id": String(nextID), "method": method, "payload": payload]
-        t.send(.string(JSONCodec.encode(req))) { _ in }
+        let text = JSONCodec.encode(req)
+        guard Self.tooLarge(method, bytes: text.utf8.count, limit: maxMessageBytes) == nil else { return false }
+        t.send(.string(text)) { _ in }
         return true
     }
 

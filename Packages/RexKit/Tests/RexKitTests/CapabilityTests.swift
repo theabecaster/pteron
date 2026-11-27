@@ -112,6 +112,7 @@ struct PresenceTests {
     @Test func theMethodTableNamesOnlyMethodsNewerThan13() {
         #expect(RexAPI.minimum(for: "com.superlogical.terminal.ports") == 15)
         #expect(RexAPI.minimum(for: "com.superlogical.tunnel.info") == 14)
+        #expect(RexAPI.minimum(for: "focus_history.reverse") == 19)
         #expect(RexAPI.minimum(for: "session.bootstrap") == 0)
         #expect(RexAPI.minimum(for: "client.reply") == 0, "client.reply is older than the prompts it answers")
         #expect(RexAPI.minimumRevision.values.allSatisfy { $0 > 13 && $0 <= RexControl.apiRevision })

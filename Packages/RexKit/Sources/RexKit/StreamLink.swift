@@ -28,6 +28,8 @@ protocol StreamLink: AnyObject {
     func ping() async throws
     /// How long a data socket may wait for the answer to its handshake, in seconds.
     var dataHandshakeDeadline: Double { get }
+    /// The largest request the server takes (`RexControl.maxMessageBytes`).
+    var maxMessageBytes: Int { get }
     /// See `RexControl.clientGeneration`: what was welcomed under an earlier count is gone.
     var clientGeneration: Int { get }
     /// Calls `done(true)` once the server has answered an attach of `session` on this connection,
@@ -56,6 +58,8 @@ enum PaceSample: Equatable, Sendable {
 
 extension StreamLink {
     var dataHandshakeDeadline: Double { ReconnectPolicy.standard.connectDeadline }
+    /// A link with no server behind it (a replay, a test) takes what Rex takes by default.
+    var maxMessageBytes: Int { 1 << 20 }
 
     var clientGeneration: Int { 0 }
     func whenAttached(_ session: String, _ done: @escaping @MainActor (Bool) -> Void) -> Int? { nil }

@@ -18,8 +18,8 @@ final class RevisionTests: XCTestCase {
 
     // MARK: Hello
 
-    func testTheHelloOffersRevision18AndNoMinimum() async throws {
-        let server = try FakeRexServer(revision: 18, serverRevision: 18)
+    func testTheHelloOffersRevision19AndNoMinimum() async throws {
+        let server = try FakeRexServer(revision: 19, serverRevision: 19)
         let address = await server.start()
         defer { server.stop() }
         // The longest label Rex keeps is 64 bytes.
@@ -28,7 +28,7 @@ final class RevisionTests: XCTestCase {
         try await c.connect()
 
         let hello = try XCTUnwrap(server.lastHello)
-        XCTAssertEqual(hello.int("api_revision"), 18)
+        XCTAssertEqual(hello.int("api_revision"), 19)
         XCTAssertNil(hello["api_min_revision"], "no minimum: a server on any revision connects, as before")
         XCTAssertEqual(Set(hello.keys), ["type", "api_revision", "client"])
         XCTAssertEqual(hello.obj("client")?.str("name"), "Sample App")
@@ -52,7 +52,8 @@ final class RevisionTests: XCTestCase {
             (13, 13, 13, 13),
             (16, 16, 16, 16),
             (18, 18, 18, 18),
-            (18, 21, 18, 21),    // a newer server translates down to ours
+            (19, 19, 19, 19),
+            (19, 21, 19, 21),    // a newer server translates down to ours
         ]
         for (revision, newest, wantNegotiated, wantServer) in cases {
             let server = try FakeRexServer(revision: revision, serverRevision: newest)
@@ -63,7 +64,7 @@ final class RevisionTests: XCTestCase {
             XCTAssertEqual(c.negotiatedRevision, wantNegotiated)
             XCTAssertEqual(c.serverRevision, wantServer)
             XCTAssertEqual(c.features, [])
-            XCTAssertEqual(server.lastHello?.int("api_revision"), 18, "the hello is the same for every server")
+            XCTAssertEqual(server.lastHello?.int("api_revision"), 19, "the hello is the same for every server")
             c.disconnect()
             server.stop()
         }
@@ -117,9 +118,9 @@ final class RevisionTests: XCTestCase {
         defer { c.disconnect() }
         try await c.connect()
 
-        for method in ["com.superlogical.terminal.ports", "com.superlogical.tunnel.info"] {
+        for method in ["com.superlogical.terminal.ports", "com.superlogical.tunnel.info", "focus_history.reverse"] {
             do {
-                try await c.blockCall(method, session: "s", block: "b")
+                try await c.call(method, ["session_id": "s"])
                 XCTFail("\(method) must not run at revision 13")
             } catch let e as RexError {
                 XCTAssertEqual(e.code, "revision_too_low")
@@ -136,7 +137,7 @@ final class RevisionTests: XCTestCase {
     }
 
     func testRevisionGatesOpenAtTheirRevision() async throws {
-        for (revision, portsSent, tunnelSent) in [(14, 0, 1), (15, 1, 1), (18, 1, 1)] {
+        for (revision, portsSent, tunnelSent, historySent) in [(14, 0, 1, 0), (15, 1, 1, 0), (18, 1, 1, 0), (19, 1, 1, 1)] {
             let server = try FakeRexServer(revision: revision)
             let address = await server.start()
             server.replyOtherwise(.result([:]))
@@ -144,8 +145,10 @@ final class RevisionTests: XCTestCase {
             try await c.connect()
             _ = try? await c.blockCall("com.superlogical.terminal.ports", session: "s", block: "b")
             _ = try? await c.blockCall("com.superlogical.tunnel.info", session: "s", block: "b")
+            _ = try? await c.call("focus_history.reverse", ["session_id": "s"])
             XCTAssertEqual(server.count("com.superlogical.terminal.ports"), portsSent, "revision \(revision)")
             XCTAssertEqual(server.count("com.superlogical.tunnel.info"), tunnelSent, "revision \(revision)")
+            XCTAssertEqual(server.count("focus_history.reverse"), historySent, "revision \(revision)")
             c.disconnect()
             server.stop()
         }

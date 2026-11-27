@@ -7,7 +7,7 @@ app relies on; update it when you use a new method or event.
 
 - `wss://<server>/api/control`, subprotocol `rex.control.v1`. Only servers with Rex's Tailscale on
   are reachable (`rex server tailscale on`), and the phone must be on the same tailnet and user.
-- The client sends `hello` with `api_revision` (`RexControl.apiRevision`, 18), `client`
+- The client sends `hello` with `api_revision` (`RexControl.apiRevision`, 19), `client`
   (`kind`, `platform`, `name` "Pteron", `version`, `label` = device name) and
   `reconnect_token` when resuming, and no `api_min_revision` (see API revisions). The server
   answers `welcome` with `client.id`, `client.reconnect_token`, `limits.max_message_bytes` and
@@ -30,11 +30,14 @@ app relies on; update it when you use a new method or event.
 ## API revisions
 
 Every server so far speaks revisions 0 up to its own newest, and translates each connection to the
-revision its welcome names. The app says 18 and no minimum, so the server picks the newest
+revision its welcome names. The app says 19 and no minimum, so the server picks the newest
 revision both have: an older server connects at its own revision, exactly as it did when the app
-said 13, and a newer one translates down to 18. Revisions 14 to 18 change no shape the app sends
+said 13, and a newer one translates down to 19. Revisions 14 to 19 change no shape the app sends
 or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `ports_changed`;
-17 to 18: the prompt events and `event_dropped`).
+17 to 18: the prompt events and `event_dropped`; 19: `focus_history.reverse`, and an event too
+large to send becomes `event_dropped` instead of closing the connection). The oldest revision
+the app serves stays 13: a revision-13, 18 or 19 server connects and works (`RevisionTests`,
+`ServerEventsTests`).
 
 - `RexControl` keeps `negotiatedRevision` (the welcome's `api_revision`; left out means 0),
   `serverRevision` (`api_server_revision`) and `features`, from every welcome, a resumed one
@@ -110,6 +113,56 @@ or decodes; they add methods and events (14: tunnels; 15: `terminal.ports`, `por
   no gaps; a gap triggers a resync.
 - Block methods take `{session_id, block_id, args}`; terminal ones are
   `com.superlogical.terminal.<name>`. The server doesn't order concurrent block calls.
+
+## Message size
+
+The welcome's `limits.max_message_bytes` (1 MiB by default, 64 KiB at the least) caps every
+message. A request over it closes the connection with 1009, which would fail every call out and
+drop every stream with it. Revision 19's page says: check the size before sending, fail only
+that request, and write a large request in fragments so that pings and pongs can go out while it
+is on its way.
+
+- `RexControl.send` measures each request's encoded bytes, exactly as they go on the wire,
+  against `maxMessageBytes` (64 KiB until a welcome says). A request over it never leaves: it
+  fails alone with `message_too_large` (413), and the connection stays. It is not `neverSent`,
+  because sending it again can't help; typed input counts it as refused. `post` returns false.
+  The same holds at every revision: the limit is older than revisions 13 to 19.
+- Typed input, the one request that grows with what the user does, goes as consecutive
+  `terminal.write`s of at most 64 KiB each, request included, each after the one before it was
+  answered (docs/terminal.md, Input). A cut never falls inside a grapheme cluster when it can
+  help it, and never inside a Unicode scalar. The size of `data` is reckoned high, as JSON
+  escapes it (a control character as six bytes), with 256 bytes to spare.
+- `URLSessionWebSocketTask` has no fragments: it sends each message whole, in one frame, and a
+  ping waits behind a message on its way. So requests stay small instead: no request the app
+  makes is near 64 KiB except typed input, which is cut to that size; at 1 Mbit/s a 64 KiB write
+  takes 0.5 s, inside the pong's 2.5 s.
+- Events: up to revision 18 an event over the limit closed the connection with 1009 (`event
+  exceeds message limit`), an ordinary drop. From revision 19 the server sends `event_dropped`
+  with the same `seq` in its place and the connection stays (Dropped events, below).
+
+## Focus history (`focus_history.reverse`, revision 19)
+
+"Step back through the focus changes the calling principal made." The app lists the method in
+`RexAPI.minimumRevision` (19, so it is never sent below that) and does not call it: Navigate
+Back and Forward keep the phone's own history (docs/goto.md). What decided it, probed on a
+revision-19 server (preview.23) in a throwaway session, 2026-11-27:
+
+- The principal is who the server says the connection is (`server.whoami`). The phone over Tailscale is
+  `kind: tailscale` with the login's `user_id` and the device's `node`; the Rex Mac app on the
+  same computer is `kind: peer`, `uid 501`. Each has a history of its own: after the Mac's
+  principal moved focus between two tabs, a Tailscale client's call answered `reversed: false`,
+  and the Mac's principal's call stepped back.
+- Clients of one principal share its history across connections: a second Tailscale connection
+  from the same login and device stepped back through what the first one did. Whether two
+  devices of one Tailscale login share one history is not known (the server compares
+  `user_id`); if so, the phone's Back would step through another device's moves.
+- Focus is the session's, not the client's: a step back moves the session's active tab and
+  focused pane for every client attached to it, the Mac app included. After the Mac's principal
+  moved to tab 2, a Tailscale client's step back moved the session to tab 1.
+- The server records focus after the session methods a client calls (`session.view` reads were
+  seen to record nothing). The phone's focus_window and focus_block are recorded; the panes the
+  phone pages on its own (a tab swipe's landing, docs/terminal.md) are not.
+- There is no method to step forward.
 
 ## Methods used
 
@@ -269,10 +322,11 @@ them only for blocks whose host's terminal creator lists them (`ServerConnection
 unknown or failed creator list counts as absent. Without them the app shows no ring and no notice,
 exactly as before. Nothing is probed or sent for either. Unknown `state` values are ignored.
 
-## Dropped events (`event_dropped`, revision 18)
+## Dropped events (`event_dropped`, revisions 17 to 19)
 
-The server sends `event_dropped` in place of an event too large to send, with that event's `seq`,
-so no gap shows. `ServerConnection.recover(dropped:)` reads back only what the lost event would
+The server sends `event_dropped` in place of an event it couldn't send, with that event's `seq`,
+so no gap shows. From revision 19 that includes an event over the message limit, which closed
+the connection before. `ServerConnection.recover(dropped:)` reads back only what the lost event would
 have changed (`DroppedEvent.recovery`); a full sync is the last resort, because it reads every
 session and features hang work on it.
 

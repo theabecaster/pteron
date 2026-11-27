@@ -4,10 +4,13 @@ import Foundation
 public enum RexAPI {
     /// Methods newer than revision 13, with the revision that added each. A call on a connection
     /// below a method's revision fails here with `revision_too_low` and is never sent. The exact
-    /// numbers come from probes; the server's page only says "after 13, by 16".
+    /// numbers come from probes and from the server's page.
     public static let minimumRevision: [String: Int] = [
         "com.superlogical.tunnel.info": 14,
         "com.superlogical.terminal.ports": 15,
+        // The phone's Navigate Back and Forward keep their own history and never call it
+        // (docs/rex-protocol.md, Focus history); listed so that a call is never sent below 19.
+        "focus_history.reverse": 19,
     ]
 
     /// The revision that added the prompt events and `event_dropped`.

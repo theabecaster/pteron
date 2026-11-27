@@ -633,6 +633,17 @@ the first call's response before you send the second").
   answer comes), keys the fence held and what a reconnect lets go, a retry, a key-bound server call, input
   that goes once (`sendOnce`), and any text on a link that can't take it now (no connection, a
   simulated delay, a method the server lacks; `call` then says why it never left).
+- **Long text goes as several writes.** A request over the server's `limits.max_message_bytes`
+  would close the control connection with 1009 (docs/rex-protocol.md, Message size). Text at the
+  front of the queue that a write can't carry (a paste) gives up its first piece, and the rest
+  stays first in the queue: each piece leaves once the one before it was answered, as any next
+  item does, and keys typed meanwhile join the rest (`TerminalStream.cutFront`). A write carries
+  at most 64 KiB, the request included, whatever the limit above that, so that the control
+  connection's pings never wait long behind one: `URLSessionWebSocketTask` sends a message whole,
+  in one frame. A cut falls between grapheme clusters, never inside an emoji, a flag, a letter
+  with its accents or CR LF; a single cluster too long for a write is cut between scalars, never
+  inside one (`WriteChunks`). Only the piece that ends the text acknowledges its input for
+  predicted echo. A connection lost during a long paste drops its rest, as for any write.
 - **Held while offline.** Without a control connection nothing is sent; the queue waits. When
   `RexControl` is connected again it goes out, in order, once the stream has caught up and only
   if the screen it was typed at is still exact (The catch-up fence); otherwise it is dropped

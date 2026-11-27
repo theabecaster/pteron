@@ -181,7 +181,7 @@ final class ServerEventsTests: XCTestCase {
         var baseline: String?
         var baselineMethods: Set<String>?
         let cases: [(String, Int?, FakeRexServer.Reply?)] = [
-            ("13", 13, nil), ("0", nil, nil), ("16", 16, nil), ("18", 18, nil),
+            ("13", 13, nil), ("0", nil, nil), ("16", 16, nil), ("18", 18, nil), ("19", 19, nil),
             ("18 without the creator list", 18, .error(code: "method_not_found", status: 404)),
             ("0 answering not_found", nil, .error(code: "not_found", status: 404)),
         ]
@@ -190,7 +190,7 @@ final class ServerEventsTests: XCTestCase {
             await rig.connect()
             XCTAssertEqual(rig.server.phase, .online, name)
             XCTAssertEqual(rig.server.capabilities.revision, revision ?? 0, name)
-            XCTAssertEqual(rig.fake.lastHello?.int("api_revision"), 18)
+            XCTAssertEqual(rig.fake.lastHello?.int("api_revision"), RexControl.apiRevision)
             XCTAssertNil(rig.fake.lastHello?["api_min_revision"])
             let snap = snapshot(rig.server)
             let methods = Set(rig.fake.requests.map(\.method))

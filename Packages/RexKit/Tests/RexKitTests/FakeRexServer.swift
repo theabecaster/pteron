@@ -41,15 +41,24 @@ final class FakeRexServer: @unchecked Sendable {
     private var reading = 0
     private var readError: String?
     private var clients = 0
+    private let maxMessageBytes: Int
+    private var largest = 0
+    private var tooLarge = 0
 
     /// `revision` is the welcome's `api_revision`; nil leaves the field out, as servers from
     /// before revisions do. `serverRevision` is `api_server_revision`, left out when nil.
-    init(revision: Int? = 18, serverRevision: Int? = nil, features: [String]? = nil) throws {
+    /// `maxMessageBytes` is the welcome's `limits.max_message_bytes`: a larger message closes
+    /// its connection with 1009, as Rex does (Rex's default is 1 MiB, its smallest 64 KiB).
+    init(revision: Int? = 18, serverRevision: Int? = nil, features: [String]? = nil,
+         maxMessageBytes: Int = 1_048_576) throws {
         self.revision = revision
         self.serverRevision = serverRevision
         self.features = features
+        self.maxMessageBytes = maxMessageBytes
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
+        // Takes any message, so that it can close for one over the limit itself.
+        ws.maximumMessageSize = 64 * 1024 * 1024
         ws.setClientRequestHandler(queue) { protocols, _ in
             NWProtocolWebSocket.Response(status: .accept, subprotocol: protocols.first)
         }
@@ -154,6 +163,9 @@ final class FakeRexServer: @unchecked Sendable {
     func count(_ method: String) -> Int { queue.sync { received.filter { $0.method == method }.count } }
     func calls(_ method: String) -> [JSONObject] { queue.sync { received.filter { $0.method == method }.map(\.payload) } }
     func forget() { queue.sync { received = [] } }
+    /// The largest message a client sent, in bytes, and how many were over the limit.
+    var largestMessage: Int { queue.sync { largest } }
+    var messagesTooLarge: Int { queue.sync { tooLarge } }
 
     // MARK: Socket
 
@@ -165,6 +177,13 @@ final class FakeRexServer: @unchecked Sendable {
             self.frames += 1
             guard error == nil, let data else {
                 self.readError = error.map { "\($0)" } ?? "no data"
+                return
+            }
+            self.largest = max(self.largest, data.count)
+            if data.count > self.maxMessageBytes {
+                self.tooLarge += 1
+                self.sendClose(c, code: 1009, reason: "message exceeds limit")
+                self.connections.removeAll { $0 === c }
                 return
             }
             guard let m = JSONCodec.decode(data) else { self.receive(c); return }
@@ -181,7 +200,7 @@ final class FakeRexServer: @unchecked Sendable {
                 self.seq = 0
                 var w: JSONObject = [
                     "type": "welcome", "protocol": "rex.control.v1",
-                    "limits": ["max_message_bytes": 1_048_576] as JSONObject,
+                    "limits": ["max_message_bytes": self.maxMessageBytes] as JSONObject,
                     "client": ["id": "client:test-\(self.clients)", "reconnect_token": "t\(self.clients)"] as JSONObject,
                 ]
                 if let r = self.revision { w["api_revision"] = r }

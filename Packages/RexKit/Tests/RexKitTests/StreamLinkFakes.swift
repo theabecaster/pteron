@@ -25,6 +25,8 @@ final class FakeLink: StreamLink {
 
     private(set) var isConnected: Bool
     var clientID: String? = "client:test"
+    /// The welcome's `limits.max_message_bytes`, as Rex sends it by default.
+    var maxMessageBytes = 1 << 20
     /// The welcome started a new client where the old one was to be continued: set by a test.
     var clientGeneration = 0
     /// As `RexControl`'s: the sessions attached on this connection and who waits for one.

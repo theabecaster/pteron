@@ -1902,8 +1902,10 @@ public final class TerminalStream {
     /// format whenever the program has asked for one, and both are plain UTF-8.
     ///
     /// Keys typed while a request is out go together right after it. Input typed without a
-    /// connection waits and goes out, in order, once the server is back. See the note above for
-    /// what happens when the connection breaks in the middle of a write.
+    /// connection waits and goes out, in order, once the server is back. Text longer than one
+    /// write may carry (a paste) goes as consecutive writes, each after the one before it was
+    /// answered (`cutFront`). See the note above for what happens when the connection breaks in
+    /// the middle of a write: it drops the rest of a long paste too.
     @discardableResult
     public func send(_ bytes: [UInt8]) -> Bool { send(bytes, report: false) }
 
@@ -1982,7 +1984,9 @@ public final class TerminalStream {
         guard !inFlight, !stopped, !inputQueue.isEmpty, link.isConnected, !fence.isUp else { return }
         // In flight first, so the stream never looks idle between the two.
         inFlight = true
+        cutFront()
         let item = inputQueue.removeFirst()
+        leftThrough = item.through
         flightID += 1
         let id = flightID, epoch = inputEpoch
         if let observer = writeObserver { observer.left(through: seq(item)) }
@@ -2019,6 +2023,44 @@ public final class TerminalStream {
                 self.pump()
             }
         }
+    }
+
+    /// A write carries at most this much, the request's own bytes included, whatever the
+    /// server's limit above it. `URLSessionWebSocketTask` sends a message whole, so the control
+    /// connection's pings and their pongs wait behind it: 64 KiB keeps that wait short on a slow
+    /// link (64 KiB, the smallest limit a server may set, takes 0.5 s at 1 Mbit/s, inside the
+    /// pong's 2.5 s), and a paste goes as one write per answer.
+    nonisolated static let writeMessageCap = 64 * 1024
+    /// Room left in each write for what `writeEnvelope` can't know exactly.
+    nonisolated static let writeMargin = 256
+
+    /// The bytes of a `terminal.write` request for this pane around an empty `data`, with the
+    /// longest request id there can be.
+    private lazy var writeEnvelope: Int = JSONCodec.encode([
+        "type": "request", "id": String(UInt64.max), "method": "com.superlogical.terminal.write",
+        "payload": ["session_id": sessionID, "block_id": blockID, "args": ["data": ""] as JSONObject] as JSONObject,
+    ] as JSONObject).utf8.count
+
+    /// How many bytes of JSON string one write's `data` may take (`WriteChunks.cost`).
+    var writeBudget: Int {
+        min(link.maxMessageBytes, Self.writeMessageCap) - writeEnvelope - Self.writeMargin
+    }
+
+    /// The number of the last input call of the item that left last.
+    private var leftThrough = 0
+
+    /// Text at the front of the queue that is too long for one write gives up its first piece,
+    /// cut between grapheme clusters (`WriteChunks`); the rest stays at the front and goes once
+    /// the piece is answered, as any next item does. Keys typed meanwhile join the rest, never
+    /// the piece out. The piece acknowledges no input of its own (it carries the number of what
+    /// left before it): only the write that ends the text does.
+    private func cutFront() {
+        guard case .text(let text, let through)? = inputQueue.first,
+              let cut = WriteChunks.cut(text, budget: writeBudget) else { return }
+        inputQueue.replaceSubrange(0..<1, with: [
+            .text(String(text[..<cut]), through: min(leftThrough, through)),
+            .text(String(text[cut...]), through: through),
+        ])
     }
 
     /// What a write of typed text needs for its round-trip sample.
