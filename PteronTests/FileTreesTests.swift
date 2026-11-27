@@ -1,3 +1,4 @@
+import GlanceModel
 import UniformTypeIdentifiers
 import XCTest
 import RexKit
@@ -108,7 +109,7 @@ final class FileTreesTests: XCTestCase {
         XCTAssertEqual(rememberedDuring, ["block:t1"])
         XCTAssertEqual(fake.calls, ["session.new_block session:1", "block.close block:t1"])
         XCTAssertEqual(fake.blocks.first?.str("flavor"), FsBlock.flavor)
-        XCTAssertEqual(fake.blocks.first?.str("label"), "Pteron #a1b2c3d4")
+        XCTAssertEqual(fake.blocks.first?.str("label"), "\(Brand.appName) #a1b2c3d4")
         XCTAssertEqual(ledger.blocks(server: fake.id, session: "session:1"), [])
         XCTAssertTrue(k.owns("block:t1", server: fake.id, session: "session:1"), "its late events change no view")
     }
@@ -144,9 +145,9 @@ final class FileTreesTests: XCTestCase {
         let fake = FakeTunnelServer()
         ledger.remember(server: fake.id, session: "session:1", block: "block:old")
         fake.blocks = [
-            ["block_id": "block:old", "flavor": FsBlock.flavor, "label": "Pteron #a1b2c3d4"],
-            ["block_id": "block:other-phone", "flavor": FsBlock.flavor, "label": "Pteron #99999999"],
-            ["block_id": "block:tunnel", "flavor": "com.superlogical.tunnel.dial", "label": "Pteron #a1b2c3d4"],
+            ["block_id": "block:old", "flavor": FsBlock.flavor, "label": "\(Brand.appName) #a1b2c3d4"],
+            ["block_id": "block:other-phone", "flavor": FsBlock.flavor, "label": "\(Brand.appName) #99999999"],
+            ["block_id": "block:tunnel", "flavor": "com.superlogical.tunnel.dial", "label": "\(Brand.appName) #a1b2c3d4"],
             ["block_id": "block:shell", "flavor": "com.superlogical.terminal.shell", "label": "shell"],
         ]
         k.serverSynced(fake)
