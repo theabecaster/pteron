@@ -25,7 +25,8 @@ import UIKit
 ///   each way); something else sends it away and brings it back (`simctl`).
 /// - `reconnect`: start the pane's stream over, as after a lost connection, and wait until it
 ///   is current again (at most 20 s).
-/// - `compose[:<draft>]`: open Compose with that draft, as ✎ does; `close`: close it, as ✎ again.
+/// - `compose[:<draft>]`: open Compose with that draft, as ✎ does; `close`: close it, as ✎ again;
+///   `yield`: the terminal takes the keyboard from compose's field, the card staying.
 /// - `<step>+<step>`: the steps one after the other with no pause between them, for a tap
 ///   right after a return or a reconnect: `away+tap:3,1`. A `type:` step takes everything
 ///   after it as its text, so it comes last: `tap:3,1+type:a+b` taps and types "a+b".
@@ -78,6 +79,8 @@ enum KeyboardTest {
             host.openCompose()
         case "close":
             host.closeCompose()
+        case "yield":
+            host.yieldComposeToTerminal()
         case "scroll":
             let scroller = host.term.scroller
             scroller.setOffset(scroller.surface.contentOffset.y + CGFloat(Double(arg) ?? 0), animated: false)
