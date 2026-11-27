@@ -32,12 +32,14 @@ final class FsFakeSocket: TunnelSocket, @unchecked Sendable {
 
     /// The server sends `data` in messages of `piece` bytes, then closes with `code` (nil: the
     /// connection just breaks, with no status).
-    func serve(_ data: Data, piece: Int = 32_768, then code: Int? = 1000) {
+    /// `closing: false` leaves the connection open after the data.
+    func serve(_ data: Data, piece: Int = 32_768, then code: Int? = 1000, closing: Bool = true) {
         var i = 0
         while i < data.count {
             deliver(.success(data.subdata(in: i..<min(i + piece, data.count))))
             i += piece
         }
+        guard closing else { return }
         lock.withLock { self.code = code ?? 0 }
         deliver(.failure(URLError(.networkConnectionLost)))
     }
@@ -378,6 +380,96 @@ final class FsTransferTests: XCTestCase {
             XCTAssertEqual(error as? FsDownloader.Failure, .unsafe("../evil"))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("evil").path))
+    }
+
+    // MARK: Cancelling a download
+
+    /// The server answers `download_begin` only once it has walked the whole tree, seconds for a
+    /// large folder. A cancel meanwhile ends the download at once, and the answer that comes
+    /// later opens nothing: its ticket is never used.
+    func testCancelWhileTheServerWalksTheFolderEndsAtOnce() async throws {
+        let link = downloadLink(size: 1_000_000), socket = FsFakeSocket()
+        link.held = [FsBlock.download]
+        var opened = 0
+        let d = FsDownloader(link: link, sessionID: "session:s", blockID: "block:fs") { _ in opened += 1; return socket }
+        let task = Task { try await d.download(["/big"], into: self.dir, hasRoom: { _ in true }) { _, _ in } }
+        let asked = await eventually { link.waitingCount == 1 }
+        XCTAssertTrue(asked)
+        d.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsDownloader.Failure, .cancelled)
+        }
+        // The server's late answer, with a ticket: dropped.
+        link.release()
+        await settle()
+        XCTAssertEqual(opened, 0)
+    }
+
+    /// A cancel before the download starts asks the server for nothing.
+    func testCancelBeforeTheStartAsksForNothing() async throws {
+        let link = downloadLink(size: 1), socket = FsFakeSocket()
+        let d = downloader(link, socket)
+        d.cancel()
+        do {
+            _ = try await d.download(["/x"], into: dir, hasRoom: { _ in true }) { _, _ in }
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsDownloader.Failure, .cancelled)
+        }
+        XCTAssertEqual(link.count(FsBlock.download), 0)
+    }
+
+    /// A slow link: the data connection is still on its way at the cancel. The download ends at
+    /// once, and the connection is closed when it comes, before any byte is read.
+    func testCancelWhileTheDataConnectionOpensClosesItWhenItComes() async throws {
+        let link = downloadLink(size: 1_000_000), socket = FsFakeSocket()
+        var handshake: CheckedContinuation<Void, Never>?
+        let d = FsDownloader(link: link, sessionID: "session:s", blockID: "block:fs") { _ in
+            await withCheckedContinuation { handshake = $0 }
+            return socket
+        }
+        let task = Task { try await d.download(["/big"], into: self.dir, hasRoom: { _ in true }) { _, _ in } }
+        let opening = await eventually { handshake != nil }
+        XCTAssertTrue(opening)
+        d.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsDownloader.Failure, .cancelled)
+        }
+        XCTAssertFalse(socket.closedByClient)
+        handshake?.resume()
+        let closed = await eventually { socket.closedByClient }
+        XCTAssertTrue(closed)
+    }
+
+    /// A cancel while the archive arrives, at 99% say, closes the stream and ends the download
+    /// without waiting for the rest.
+    func testCancelWhileTheArchiveArrivesClosesTheStream() async throws {
+        try write("Src/b.bin", bytes(200_000))
+        let data = try archive(of: "Src")
+        let socket = FsFakeSocket()
+        let out = dir.appendingPathComponent("o", isDirectory: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let d = downloader(downloadLink(size: 200_000), socket)
+        var got: Int64 = 0
+        let task = Task { try await d.download(["/x"], into: out, hasRoom: { _ in true }) { g, _ in got = g } }
+        // All but the archive's end, and the stream stays open.
+        socket.serve(data.prefix(data.count - 1024), then: nil, closing: false)
+        let most = await eventually { got >= 190_000 }
+        XCTAssertTrue(most)
+        d.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsDownloader.Failure, .cancelled)
+        }
+        XCTAssertTrue(socket.closedByClient)
     }
 
     func testRefusalsAreWorded() {

@@ -253,6 +253,8 @@ public final class FsDownloader {
     public let blockID: String
     private var socket: (any TunnelSocket)?
     private var cancelled = false
+    /// Ends the wait under way (`unlessCancelled`) with `Failure.cancelled`.
+    private var endWait: (@MainActor () -> Void)?
 
     public convenience init(control: RexControl, sessionID: String, blockID: String, open: @escaping FsOpen) {
         self.init(link: control, sessionID: sessionID, blockID: blockID, open: open)
@@ -265,9 +267,16 @@ public final class FsDownloader {
         self.open = open
     }
 
+    /// Stops the download: `download` throws `Failure.cancelled` at once, wherever it waits. The
+    /// server answers `download_begin` only once it has walked the whole tree, seconds for a large
+    /// folder, so that answer is not waited for: it is dropped when it comes, and its ticket is
+    /// never used. A data connection that opens after the cancel is closed.
     public func cancel() {
         cancelled = true
         socket?.close()
+        let end = endWait
+        endWait = nil
+        end?()
     }
 
     /// Downloads `paths` (each taken literally: `TarPath.literal`), folders with everything in
@@ -276,19 +285,20 @@ public final class FsDownloader {
     /// percent. What arrived is left in `root` on a failure; the caller deletes it.
     public func download(_ paths: [String], into root: URL, hasRoom: @escaping @Sendable (Int64) -> Bool,
                          progress: @escaping @MainActor (Int64, Int64) -> Void) async throws -> Result {
+        if cancelled { throw Failure.cancelled }
         let args: JSONObject = ["ref": BytesStream.ref("download"), "paths": paths.map(TarPath.literal), "recursive": true]
-        let reply: JSONObject
-        do {
-            reply = try await link.call(FsBlock.download, ["session_id": sessionID, "block_id": blockID, "args": args])
-        } catch {
-            throw Self.failure(beginning: error)
+        let link = self.link, payload: JSONObject = ["session_id": sessionID, "block_id": blockID, "args": args]
+        let reply = try await unlessCancelled {
+            do { return try await link.call(FsBlock.download, payload) } catch { throw Self.failure(beginning: error) }
         }
         let info = Info(roots: reply.int("roots") ?? 0, entries: reply.int("entries") ?? 0, size: Int64(reply.int("size") ?? 0))
         guard let ticket = reply.str("ticket") else { throw Failure.lost("no ticket") }
         guard hasRoom(info.size) else { throw Failure.noRoom(info.size) }
         if cancelled { throw Failure.cancelled }
-        let socket: any TunnelSocket
-        do { socket = try await open(ticket) } catch { throw Failure.lost(error.localizedDescription) }
+        let open = self.open
+        let socket = try await unlessCancelled({
+            do { return try await open(ticket) } catch { throw Failure.lost(error.localizedDescription) }
+        }, late: { $0.close() })
         self.socket = socket
         defer { self.socket = nil }
         if cancelled { socket.close(); throw Failure.cancelled }
@@ -305,6 +315,22 @@ public final class FsDownloader {
             do { try extractor.finish() } catch { throw Failure.lost("the archive ended early") }
             return Result(info: info, tops: extractor.tops, skipped: extractor.skipped)
         }
+    }
+
+    /// What `op` gives, or `Failure.cancelled` as soon as `cancel()` is called, whichever comes
+    /// first. What `op` gives after that goes to `late`.
+    private func unlessCancelled<T>(_ op: @escaping @MainActor () async throws -> T,
+                                    late: @escaping @MainActor (T) -> Void = { _ in }) async throws -> T {
+        if cancelled { throw Failure.cancelled }
+        let race = FirstOf<T>()
+        endWait = { race.finish(.failure(Failure.cancelled)) }
+        defer { endWait = nil }
+        Task { @MainActor in
+            let r: Swift.Result<T, Error>
+            do { r = .success(try await op()) } catch { r = .failure(error) }
+            if !race.finish(r), case .success(let v) = r { late(v) }
+        }
+        return try await race.value()
     }
 
     enum PullEnd: Sendable {
@@ -350,6 +376,29 @@ public final class FsDownloader {
             if m.contains("no such file") || m.contains("does not exist") { return .notFound }
             return .refused(e.message)
         }
+    }
+}
+
+/// The first of two results: an operation's, or a cancel's. It stays on the main actor: the
+/// wait is woken with nothing, and reads the result it holds.
+@MainActor
+private final class FirstOf<T> {
+    private var result: Swift.Result<T, Error>?
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    /// Keeps `r` if nothing came first. False when something did: `r` is not used.
+    @discardableResult
+    func finish(_ r: Swift.Result<T, Error>) -> Bool {
+        guard result == nil else { return false }
+        result = r
+        waiter?.resume()
+        waiter = nil
+        return true
+    }
+
+    func value() async throws -> T {
+        if result == nil { await withCheckedContinuation { waiter = $0 } }
+        return try result!.get()  // set before the wake
     }
 }
 

@@ -114,11 +114,13 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
     private let control: RexControl
     private let sessionID: String
     private let blockID: String
+    private let notice: Notice
     private var downloader: FileDownloader?
-    private var treeDownloader: FsDownloader?
-    /// A folder download is under way (its block may still be being made).
-    private var fetchingFolder = false
-    private var folderCancelled = false
+    /// The folder download under way (its block may still be being made).
+    private var folderRun: FolderRun?
+    /// What the last Cancel of a folder download said. The next download takes its place, so its
+    /// progress shows at once.
+    private var cancelNote: String?
     /// Runs an fs transfer (`FileSender.withFsBlock`). Nil where the pane's computer has none.
     var withFsBlock: ((_ body: @escaping @MainActor (String, @escaping FsOpen) async throws -> Void) async throws -> Void)?
     /// The folder the export picker or the share sheet holds, removed when it is done.
@@ -141,13 +143,25 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
             self.discard = discard
         }
     }
+    /// One folder download. Its Cancel frees the browser at once: the next download can start
+    /// while this one's task still ends, as the fs block's close waits for the server, which
+    /// answers it only once it has walked the folder. Whatever that task does after the Cancel
+    /// shows nothing and hands nothing on.
+    private final class FolderRun {
+        let name: String
+        var downloader: FsDownloader?
+        var cancelled = false
+
+        init(name: String) { self.name = name }
+    }
     /// The path named a folder. True when the folder was shown instead (the file browser).
     var onFolder: ((String) -> Bool)?
 
-    init(control: RexControl, sessionID: String, blockID: String) {
+    init(control: RexControl, sessionID: String, blockID: String, notice: Notice = .shared) {
         self.control = control
         self.sessionID = sessionID
         self.blockID = blockID
+        self.notice = notice
     }
 
     /// A download's notice: "Saving name · 23%", in whole percents rounded down, so 100% shows
@@ -159,9 +173,26 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
 
     func cancel() {
         downloader?.cancel()
-        treeDownloader?.cancel()
-        if fetchingFolder { folderCancelled = true }
+        if let run = folderRun { cancel(run) }
         arriving?.cancelled = true
+    }
+
+    /// Ends a folder download for the browser now: it says so at once, and the next download can
+    /// start. A run that is no longer the one under way is left alone.
+    private func cancel(_ run: FolderRun) {
+        guard folderRun === run else { return }
+        folderRun = nil
+        run.cancelled = true
+        run.downloader?.cancel()
+        let note = "Didn't save \(run.name)."
+        cancelNote = note
+        notice.show(note, style: .neutral)
+    }
+
+    /// A new download starts: the note of the last one's Cancel makes way for its progress.
+    private func clearCancelNote() {
+        if let note = cancelNote { notice.withdraw(note) }
+        cancelNote = nil
     }
 
     /// Presents the system's Share or Save sheet over `top`. The progress that says `progress`
@@ -171,13 +202,14 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                          discard: @escaping @MainActor () -> Void) {
         let a = Arriving(sheet: sheet, discard: discard)
         arriving = a
+        let notice = self.notice
         top.present(sheet, animated: true) { [weak self] in
             if self?.arriving === a { self?.arriving = nil }
             if a.cancelled {
                 sheet.dismiss(animated: true)
                 a.discard()
             } else {
-                Notice.shared.dismissProgress(progress)
+                notice.dismissProgress(progress)
             }
         }
         // The Save sheet loads out of process, so it may take a while to come in. One that never
@@ -186,7 +218,7 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
             try? await Task.sleep(for: .seconds(10))
             guard let self, self.arriving === a, sheet.presentingViewController == nil else { return }
             self.arriving = nil
-            Notice.shared.dismissProgress(progress)
+            notice.dismissProgress(progress)
             a.discard()
         }
     }
@@ -207,7 +239,9 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
     }
 
     private func fetch(_ path: String, machine: String, to destination: Destination, over view: UIView?) {
-        guard downloader == nil, !fetchingFolder else { return Notice.shared.show("Wait for the file on its way to finish.") }
+        guard downloader == nil, folderRun == nil else { return notice.show("Wait for the file on its way to finish.") }
+        clearCancelNote()
+        let notice = self.notice
         let d = FileDownloader(control: control, sessionID: sessionID, blockID: blockID)
         downloader = d
         let name = (path as NSString).lastPathComponent
@@ -219,7 +253,7 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                     try file.write(data)
                 }, progress: { got, size in
                     let p = Self.progress(destination.verb, name, got: got, size: size)
-                    Notice.shared.showProgress(p.text, fraction: p.fraction, cancel: cancel)
+                    notice.showProgress(p.text, fraction: p.fraction, cancel: cancel)
                 })
                 self.downloader = nil
                 file.close()
@@ -227,12 +261,12 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                 let url = try file.url ?? Self.empty(named: info.name)
                 switch destination {
                 case .preview(let hint):
-                    Notice.shared.dismiss()
+                    notice.dismiss()
                     await self.show(url, textHint: hint, over: view)
                 case .share, .files:
                     // The notice stays, at 100%, until the system's sheet is in.
                     let done = Self.progress(destination.verb, name, got: 1, size: 1)
-                    Notice.shared.showProgress(done.text, fraction: done.fraction, cancel: cancel)
+                    notice.showProgress(done.text, fraction: done.fraction, cancel: cancel)
                     self.hand(url, to: destination, over: view, progress: done.text)
                 }
             } catch {
@@ -244,9 +278,9 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                 if f == .folder, destination == .preview(textHint: false), self.onFolder?(path) == true { return }
                 let retry = Notice.Action(title: "Try Again") { self.fetch(path, machine: machine, to: destination, over: view) }
                 switch f {
-                case .cancelled: Notice.shared.show(PathGuess.message(f, path: path, machine: machine), style: .neutral)
-                case .lost: Notice.shared.show(PathGuess.message(f, path: path, machine: machine), action: retry)
-                default: Notice.shared.show(PathGuess.message(f, path: path, machine: machine))
+                case .cancelled: notice.show(PathGuess.message(f, path: path, machine: machine), style: .neutral)
+                case .lost: notice.show(PathGuess.message(f, path: path, machine: machine), action: retry)
+                default: notice.show(PathGuess.message(f, path: path, machine: machine))
                 }
             }
         }
@@ -258,20 +292,21 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
     /// folder as it arrives, then hands it to Save to Files (moved, not copied, so a large
     /// folder needs its room once) or the share sheet. A download that fails leaves nothing.
     func exportFolder(_ path: String, machine: String, to destination: Destination, over view: UIView?) {
-        guard downloader == nil, !fetchingFolder else { return Notice.shared.show("Wait for the file on its way to finish.") }
-        guard let withFsBlock else { return Notice.shared.show(Messages.updateRex(machine, to: "save folders")) }
+        guard downloader == nil, folderRun == nil else { return notice.show("Wait for the file on its way to finish.") }
+        guard let withFsBlock else { return notice.show(Messages.updateRex(machine, to: "save folders")) }
         let name = (path as NSString).lastPathComponent
-        fetchingFolder = true
-        folderCancelled = false
+        let run = FolderRun(name: name)
+        folderRun = run
+        clearCancelNote()
+        let notice = self.notice
         let cancel: @MainActor () -> Void = { [weak self] in self?.cancel() }
         let start = Self.progress(destination.verb, name, got: 0, size: 0)
-        Notice.shared.showProgress(start.text, fraction: start.fraction, cancel: cancel)
+        notice.showProgress(start.text, fraction: start.fraction, cancel: cancel)
         let control = self.control, sessionID = self.sessionID
-        let background = BackgroundTask(name: "Save folder") { [weak self] in self?.cancel() }
+        let background = BackgroundTask(name: "Save folder") { [weak self] in self?.cancel(run) }
         Task { @MainActor in
             defer {
-                self.fetchingFolder = false
-                self.treeDownloader = nil
+                if self.folderRun === run { self.folderRun = nil }
                 background.end()
             }
             var staging: URL?
@@ -279,21 +314,23 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                 let root = try FileStaging.folder(in: FileStaging.incoming)
                 staging = root
                 var result: FsDownloader.Result?
-                // Progress hops to the main actor on its own; once the download is over, a late
-                // one must not put the notice back.
+                // Progress hops to the main actor on its own; once the download is over or
+                // cancelled, a late one must not put the notice back.
                 let over = OverFlag()
                 defer { over.set = true }
                 try await withFsBlock { blockID, open in
+                    if run.cancelled { throw FsDownloader.Failure.cancelled }
                     let d = FsDownloader(control: control, sessionID: sessionID, blockID: blockID, open: open)
-                    self.treeDownloader = d
-                    if self.folderCancelled { d.cancel() }
+                    run.downloader = d
                     result = try await d.download([path], into: root, hasRoom: { Self.hasRoom(for: $0) }) { got, size in
-                        guard !over.set else { return }
+                        guard !over.set, !run.cancelled else { return }
                         let p = Self.progress(destination.verb, name, got: got, size: size)
-                        Notice.shared.showProgress(p.text, fraction: p.fraction, cancel: cancel)
+                        notice.showProgress(p.text, fraction: p.fraction, cancel: cancel)
                     }
                 }
                 over.set = true
+                // Cancelled while the fs block closed: the copy goes, and no sheet comes.
+                if run.cancelled { return FileStaging.remove(root) }
                 guard let result, let top = result.tops.first else { throw FsDownloader.Failure.lost("nothing arrived") }
                 #if DEBUG
                 // `FILES_FOLDER <copy>`: where the folder is until it is saved, to check it against the computer's.
@@ -302,33 +339,33 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
                 // The notice stays, at 100%, until the system's sheet is in; a note about links
                 // left out takes its place.
                 let done = Self.progress(destination.verb, name, got: 1, size: 1)
-                Notice.shared.showProgress(done.text, fraction: done.fraction, cancel: cancel)
+                notice.showProgress(done.text, fraction: done.fraction, cancel: cancel)
                 if result.skipped > 0 {
                     let n = result.skipped
-                    Notice.shared.show(n == 1 ? "\(name) came without its 1 link." : "\(name) came without its \(n) links.", style: .neutral)
+                    notice.show(n == 1 ? "\(name) came without its 1 link." : "\(name) came without its \(n) links.", style: .neutral)
                 }
+                self.folderRun = nil
                 self.handFolder(root.appendingPathComponent(top, isDirectory: true), staging: root, to: destination, over: view,
                                 progress: done.text)
             } catch {
                 if let staging { FileStaging.remove(staging) }
+                // The Cancel said so already.
+                if run.cancelled { return }
                 let retry = Notice.Action(title: "Try Again") { self.exportFolder(path, machine: machine, to: destination, over: view) }
-                if self.folderCancelled {
-                    return Notice.shared.show("Didn't save \(name).", style: .neutral)
-                }
                 switch error as? FsDownloader.Failure {
-                case .cancelled?: Notice.shared.show("Didn't save \(name).", style: .neutral)
-                case .notFound?: Notice.shared.show("There's no \(name) on \(machine).")
-                case .noPermission?: Notice.shared.show("Rex on \(machine) isn't allowed to read \(name).")
+                case .cancelled?: notice.show("Didn't save \(name).", style: .neutral)
+                case .notFound?: notice.show("There's no \(name) on \(machine).")
+                case .noPermission?: notice.show("Rex on \(machine) isn't allowed to read \(name).")
                 case .noRoom(let size)?:
-                    Notice.shared.show("This \(DeviceWord.current) doesn't have room for \(name) (\(SendTarget.size(size))).")
-                case .unsafe?: Notice.shared.show("Couldn't save \(name): it holds a name that isn't safe to save.")
-                case .saveFailed?: Notice.shared.show("Couldn't save \(name) on this \(DeviceWord.current). Free up space, then try again.")
-                case .refused?: Notice.shared.show("\(Messages.capitalized(machine)) refused \(name).", action: retry)
+                    notice.show("This \(DeviceWord.current) doesn't have room for \(name) (\(SendTarget.size(size))).")
+                case .unsafe?: notice.show("Couldn't save \(name): it holds a name that isn't safe to save.")
+                case .saveFailed?: notice.show("Couldn't save \(name) on this \(DeviceWord.current). Free up space, then try again.")
+                case .refused?: notice.show("\(Messages.capitalized(machine)) refused \(name).", action: retry)
                 case .lost?, nil:
                     if (error as? RexError)?.code == "not_found" || (error as? RexError)?.code == "method_not_found" {
-                        return Notice.shared.show(Messages.updateRex(machine, to: "save folders"))
+                        return notice.show(Messages.updateRex(machine, to: "save folders"))
                     }
-                    Notice.shared.show("Couldn't save \(name). \(Messages.notSent(machine))", action: retry)
+                    notice.show("Couldn't save \(name). \(Messages.notSent(machine))", action: retry)
                 }
             }
         }
@@ -343,7 +380,7 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
 
     private func handFolder(_ folder: URL, staging: URL, to destination: Destination, over view: UIView?, progress: String) {
         guard let top = Self.top(over: view) else {
-            Notice.shared.dismissProgress(progress)
+            notice.dismissProgress(progress)
             return FileStaging.remove(staging)
         }
         if let old = exportingFolder { FileStaging.remove(old) }
@@ -424,7 +461,7 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource, @preconcurrency
 
     private func hand(_ url: URL, to destination: Destination, over view: UIView?, progress: String) {
         guard let top = Self.top(over: view) else {
-            Notice.shared.dismissProgress(progress)
+            notice.dismissProgress(progress)
             return Self.delete(url)
         }
         if let old = exporting { Self.delete(old) }

@@ -132,6 +132,15 @@ final class Notice {
         }
     }
 
+    /// Puts away the plain notice that says `text` before its time, and nothing else: what it
+    /// held back shows now. A new download takes the place of its cancelled one's note this way,
+    /// so its progress shows at once.
+    func withdraw(_ text: String) {
+        guard case .plain(let t, _, _) = slot, t == text else { return }
+        hide?.cancel()
+        plainHid()
+    }
+
     /// Puts the notice away and runs its button's action. A job's Cancel leaves its progress up
     /// until the job ends.
     func runAction() {

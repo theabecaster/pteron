@@ -1399,6 +1399,15 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
   Links in the folder are left out and said so; an entry with `..` or an absolute path stops the
   download as unsafe. A cancel, a lost stream or an archive that ends early deletes what arrived,
   so no half folder is left, and offers Try Again where it can help.
+  - **Cancel frees the browser at once.** The server answers `download_begin` only once it has
+    walked the whole folder (1.6 to 2.8 s for about 53,000 entries on an M-series Mac, probed),
+    and holds the fs block's `block.close` until that walk is over. So a Cancel doesn't wait for
+    either: `FsDownloader.cancel` ends the download wherever it waits (the begin, the data
+    connection's handshake, the archive), says "Didn't save name." and lets the next Save or
+    Share start, on a block of its own, while the cancelled one's block closes behind it. What
+    that task does afterwards (the walk's late answer, which by then is `not_found` and carries
+    no ticket, a data connection that opens late, which is closed, the end of the close) shows
+    nothing and hands no sheet on. The next download's progress takes the place of the note.
 - **Browse.** "Browse Files…" in the attach menu's "Files on <computer>", below the sending
   rows, and in the palette's commands (as are Insert Path…, Insert File… and Insert Photo…;
   [goto.md](goto.md)), opens a sheet over
