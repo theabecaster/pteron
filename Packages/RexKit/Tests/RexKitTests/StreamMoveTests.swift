@@ -116,7 +116,6 @@ final class StreamMoveTests: XCTestCase {
         stream.moved(to: "session:other")
         link.held = []
         link.release()
-        _ = await eventually { !stream.isFenced }
         await settle()
         XCTAssertEqual(link.written, ["a"], "what had left is not sent again, what waited is gone")
         XCTAssertFalse(stream.hasPendingInput)

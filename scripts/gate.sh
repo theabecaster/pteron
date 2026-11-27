@@ -31,10 +31,11 @@ FAILED=()
 
 xcodegen generate -q || FAILED+=(xcodegen)
 
-# The package tests, one package after the other. gate-branch runs this script under
-# `taskpolicy -b`, and the children inherit that background priority; a wall-time test
-# (EarlySocketStreamTests) can pass there when it should fail, so the script puts itself back
-# to normal priority first. Either package failing fails the gate and names the package.
+# The package tests, one package after the other, at normal priority: under background priority
+# their sleeps stretch 5-6 times and a wall-time test (EarlySocketStreamTests) can pass when it
+# should fail. A caller that ran this script under `taskpolicy -b` is undone here as far as
+# macOS allows; run it at normal priority. Either package failing fails the gate and names the
+# package.
 taskpolicy -B -p $$ 2>/dev/null
 for pkg in RexKit RexGlance; do
   swift test --package-path "Packages/$pkg" > "build/gate-$pkg.log" 2>&1
@@ -45,8 +46,8 @@ for pkg in RexKit RexGlance; do
   fi
 done
 
-# Back to the background priority gate-branch.sh gave this script, for the app suite and the
-# Release build; only the packages above ran at normal priority.
+# Background priority for the app suite and the Release build, so a long gate leaves the box
+# usable; only the packages above run at normal priority.
 taskpolicy -b -p $$ 2>/dev/null
 
 # The Mac's load when the tests begin, for reading a failure afterwards.
