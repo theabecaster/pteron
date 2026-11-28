@@ -10,9 +10,6 @@ Sources, all under the gitignored `Vendor/` after `scripts/build-ghostty.sh`:
 - `H/` = `Vendor/GhosttyVt.xcframework/ios-arm64-simulator/Headers/ghostty/vt/`
 - `S/` = `Vendor/ghostty/src/`, `E/` = `Vendor/ghostty/example/`
 
-The research notes this file was cut from, with code samples and the API walk-through, are in
-git: `git show 447a94a:docs/ghostty-api-notes.md`.
-
 ## Everywhere
 
 - `GHOSTTY_SUCCESS` is 0 and errors are negative. `GHOSTTY_NO_VALUE` is a normal answer for

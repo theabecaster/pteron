@@ -132,17 +132,22 @@ cargo test --manifest-path Relay/Cargo.toml       # helper: push policy, payload
   folded screen only). For other postures use `-simulateDuo` on an iPad simulator. An iPad
   window is laid out as the Duo's open screen when wide and as its folded screen when narrow;
   check a small window too (window controls, docs/duo-layout.md, iPad).
+- Run app tests serially, never with parallel-testing flags: parallel workers give false failures.
 - After a change to the feed path, the renderer or the host's main-thread work, run
   `scripts/bench/run.sh <sim-id>` (about 5 minutes, no server). It fails when a number passes its
   budget (docs/ghostty-engine.md, Measurements).
+- `scripts/gate.sh` is the check before merging or shipping: app tests and a Release build on a
+  fresh simulator, our warnings, and `check-brand.sh`.
+- Heavy work (the gate, archives) can run on a build Mac: `scripts/sync-macdesk.sh [-n] [dir]`
+  copies the tree (`PTERON_BUILD_HOST` picks the host), then run it there over ssh. Other work shares
+  those Macs: hold the `~/rexduo-build.lock` folder (`mkdir`) while you use one, and check its load.
 - Releases (device installs, TestFlight, Beacon's packaging): [docs/release.md](docs/release.md).
-- CI (`.github/workflows/ci.yml`) runs on GitHub's own machines; the owner's Macs are not used.
-  Job `build` runs RexKit, RexGlance and app tests on GitHub's `xcode-27` macOS runner (Xcode 27.2),
-  for pushes to main, pull requests and manual runs. It builds the Ghostty framework there and
-  caches it, keyed on the pins and patches. Job `helper` runs `scripts/check-brand.sh` and
-  `cargo test` on GitHub's Linux runners. `build` is required for merging into main for outside contributors;
-  their fork pull requests only run after the owner approves them. The owner and their agents may merge straight to main (admin bypass)
-  after building and testing locally; don't wait on CI.
+  TestFlight uploads run on a build Mac (`scripts/testflight.sh`) or on GitHub (the `TestFlight`
+  workflow, for when the build Macs are busy).
+- CI (`.github/workflows/ci.yml`) runs RexKit, RexGlance and app tests on GitHub's `xcode-27` runner
+  (job `build`), and the brand check and `cargo test` on Linux (job `helper`), for pushes to main
+  and pull requests. Fork pull requests run only after the owner approves them. The owner and their
+  agents may merge straight to main (admin bypass) after building and testing locally; don't wait on CI.
 
 ## Debug launch arguments
 
@@ -158,8 +163,11 @@ claims the pane you view and resizes it on the Mac, and the key bar and `-typeTe
 shell.
 
 - Test only in throwaway sessions you create, named `zz-…` (`rex new zz-test`), and close them
-  afterwards. Don't open, type into, resize, rename, split or close any other session.
-- For a launch check that touches no pane, use `-autoOpen zz-none -sizing mirror`.
+  afterwards. Don't open, type into, resize, rename, split or close any other session, and subscribe
+  to events of your own sessions only (no `rex events --all`).
+- Every launch with `-servers` carries `-autoOpen zz-…`: without it the app opens and fit-claims
+  a real tab. For a launch check that touches no pane, use `-autoOpen zz-none -sizing mirror`.
+- Don't rename the Rex session you run in, even when a hook asks: it holds other tabs.
 - Unit tests run inside the app, which doesn't connect while it hosts tests.
 - `scripts/install-duo.sh`, `scripts/ship-macdesk.sh <build>` and `Relay/package.sh` (without
   `--no-notarize`) install on a phone, upload or notarize. Run them only when asked.

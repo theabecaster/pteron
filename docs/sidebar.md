@@ -1,10 +1,11 @@
 # Sidebar
 
 The sidebar lists every machine (a Rex server), its sessions and their tabs, like the Rex Mac
-app's sidebar, and switches to an Agents mode like the Mac's activity mode. Checked against
-Apple's HIG (Sidebars, Disclosure controls, Outline views), November 2026.
+app's sidebar, and switches to an Agents mode like the Mac's activity mode.
 
 ## What Apple says
+
+From the HIG (Sidebars, Disclosure controls, Outline views):
 
 - Group hierarchy with disclosure controls, so the sidebar's height stays manageable.
 - Show no more than two levels where possible. With more, give each group a short, clear label.
@@ -13,8 +14,7 @@ Apple's HIG (Sidebars, Disclosure controls, Outline views), November 2026.
 - Let people hide the sidebar; keep critical actions off its bottom edge.
 
 Rex has three levels: machine, session, tab. Each level gets its own row style, so the depth reads
-at a glance. Xcode's navigator, Finder and Slack use the same tools: indentation, one strong top
-level, quiet group labels, and counts on closed groups.
+at a glance: indentation, one strong top level, quiet group labels, and counts on closed groups.
 
 ## Hierarchy and visual language
 
@@ -67,8 +67,8 @@ Sessions are what people look for, so their names are full contrast and semibold
   - With Reduce Motion, rows and summaries only fade.
 - The state is saved per item in `Prefs.sidebarCollapsed`: `m:<server id>` and
   `s:<server id>:<session id>`. Everything starts open. Keys of sessions a connected server no
-  longer has, and of removed servers, are dropped, as is the `p:<server id>` of the Ports group
-  the sidebar once had.
+  longer has, of removed servers, and old `p:<server id>` keys are dropped
+  (`SidebarCollapse.pruned`).
 - The tab on screen always has a row: when the selection changes (a tap, Jump to Waiting, a push,
   a toast, a new session), its session and machine open, animated (`SidebarCollapse.revealing`).
 - A connected machine without sessions shows "No sessions" with New Session. With no servers at
@@ -92,17 +92,16 @@ Sessions are what people look for, so their names are full contrast and semibold
   whose first word is the agent's program, as a shell titles the pane (`claude --resume`, `aider
   --model x`), which over ssh is all there is. A path, a `user@host:path` title or a command that
   only mentions an agent (`vim CLAUDE.md`) never counts, so a shell in `~/claude-notes` is no
-  agent. Checked against real panes in `AgentDetectTests` (Claude Code 2.1.329 titles itself
-  "Claude Code", then the task's name, with no spinner; Codex titles itself with the folder;
+  agent. Checked against real panes in `AgentDetectTests` (Claude Code titles itself "Claude
+  Code", then the task's name, with no spinner; Codex titles itself with the folder;
   cursor-agent sets none). Claude on Linux, reported by its version number alone, is found only
   once its OSC 7501 record or "Claude Code" title is in.
 - Agents mode lists agents grouped by machine. Machines keep their order. Inside a machine, the
   order is waiting (oldest first), error, working, done, idle. Machine headers here don't fold:
   a waiting agent is never hidden.
 - Tapping an agent, or Return on a focused row, opens its tab with its pane shown. Swipe gives
-  Interrupt, Enter (when waiting) and Jump, as the old sheet did.
-- It replaces the Agents sheet. `cmd+.` (`client.sidebar.activity.toggle`) toggles the mode, as
-  on the Mac: it shows the sidebar in Agents mode, or returns to Sessions when Agents is already
+  Interrupt, Enter (when waiting) and Jump.
+- `cmd+.` (`client.sidebar.activity.toggle`) toggles the mode, as on the Mac: it shows the sidebar in Agents mode, or returns to Sessions when Agents is already
   showing. Jump to Waiting has its own action, `client.agents.jump_to_waiting` (`alt+cmd+.` by
   default), besides the waiting pill and the VoiceOver magic tap.
 - Where there is no sidebar, the same list shows in a sheet (`AgentsSheet`, opened with
@@ -143,11 +142,10 @@ to the list.
 - Rows follow the sidebar's order of their panes, then the port number.
 - A down machine keeps its last known ports: the button and the rows are dimmed, the popover
   says why under its title, and a tap says the machine is offline.
-- Why here: a group of rows under each machine made the list longer and moved nothing anyone
-  scrolls for. A header accessory is the Mac's and VS Code's way (a Ports count on its panel's
-  tab): one quiet element, only while there is something behind it. The same ports stay in
-  the pane menu (the pane's own), in Go to Anything ("Open localhost:3000 · Next.js") and in
-  tapped `localhost` links.
+- Why a header button and not rows: a group of rows under each machine made the list longer
+  for nothing anyone scrolls for. One quiet element, only while there is something behind it,
+  as the Mac and VS Code do. The same ports stay in the pane menu (the pane's own), in Go to
+  Anything ("Open localhost:3000 · Next.js") and in tapped `localhost` links.
 - Tab mode has no sidebar: the session popover's machine heading has the same button, and it
   opens the machine's ports in a sheet (`PortsSheet`, `AppModel.showPorts(_:)`) once the popover
   has closed.
@@ -176,7 +174,7 @@ the Mac (`Features/Sidebar/SidebarDrag.swift`). There is no visible Move item. O
 revision 22 or later a tab also drops into another of its sessions (Move to Session, below).
 
 - **Lift.** A press that moves lifts the row (`.onDrag`, beside the row's context menu, carrying
-  only ids). A press that doesn't move shows the menu as before. A sideways move before the lift
+  only ids). A press that doesn't move shows the menu. A sideways move before the lift
   is the swipe; an open swipe row closes when a lift begins. Rows of a down machine don't lift,
   nor does anything in Agents mode, nor rows of a server older than revision 13 or one that
   answered `method_not_found` for `session.move_window` (tabs) or `session.move` (sessions).
@@ -208,8 +206,8 @@ revision 22 or later a tab also drops into another of its sessions (Move to Sess
 ## Move to Session
 
 A tab moves to another session of the same computer with its programs running
-(`session.transfer_window`, revision 22). The Rex app has no such action (its build of 25
-November 2026 lists none, and its tab menus have none); the CLI has `rex window move --to`.
+(`session.transfer_window`, revision 22). The Rex Mac app has no such action; the CLI has
+`rex window move --to`.
 
 - **Where.** The tab row's menu: Move to Session, a submenu of the computer's other sessions in
   sidebar order, between New Tab and Close Tab (`TabRowMoveMenu`, its own view, so the session
@@ -318,10 +316,9 @@ place. Only these show it:
   state, recomputed once per main-actor turn and set only when one of those changes. A title,
   directory or status line change in some pane doesn't re-render or re-sort the list. The mode
   switch and `WaitingWatcher` share `AppModel.waitingAgentIDs`, built on it.
-- Sessions mode is a `LazyVStack` in a `ScrollView`, not a `List`. On the device a `List` sizes
-  every visible cell again on each fold (`UICollectionView` self-sizing in its batch update): 68% of
-  a fold's main-thread time, and 18 to 43 ms a fold however cheap the rows (rows of one `Text`
-  still took 18 to 42 ms). The stack builds only the rows that come into view and never measures the others again.
+- Sessions mode is a `LazyVStack` in a `ScrollView`, not a `List` (below): a `List` sizes every
+  visible cell again on each fold. The stack builds only the rows that come into view and never
+  measures the others again.
 - What `List` gave, kept by hand: swipe actions (`SidebarSwipe`: a sideways-only UIKit pan, the first
   action at the edge, full swipe for the leading one, one row open at a time, a tap closes it,
   VoiceOver gets the same actions), pull to refresh, context menus, keyboard focus and Return on
@@ -335,53 +332,16 @@ place. Only these show it:
 - Reorder: rows stay equatable and capture ids only; their frames are recorded unobserved; only
   the gap line reads the drag. Without support no row records or lifts.
 
-### Device measurements (iPhone Duo, 120 Hz)
+### Why a stack, not a `List`
 
-Measured 2026-11-17 on the iPhone Duo (iOS 27.2.1), Debug builds with `-O`, `-sidebarFoldBench 8
--sidebarFoldBenchScope session`: a 50-tab throwaway session folded and opened 8 times each, on a
-test server (`-servers`) with 54 rows open. A late frame is a gap over 12.5 ms (1.5 refreshes).
-The worst frame per fold or open is the median of the 8 (the highest in brackets).
-
-Unfolded (inner screen, landscape, sidebar inline at 200 pt), 16 toggles a run:
-
-| Build | worst frame, fold ms | worst frame, open ms | late frames | late time ms |
-| --- | --- | --- | --- | --- |
-| `List` (main) | 30.4 (37.9) | 40.8 (42.9) | 102 | 792 |
-| `List`, second run | 23.8 (38.6) | 35.3 (40.2) | 109 | 736 |
-| `List`, rows only a `Text` | 24.6 (30.7) | 31.8 (41.7) | 61 | 518 |
-| `List`, 4 rows added a frame | 24.3 (34.3) | 29.1 (33.3) | 89 | 851 |
-| `List`, no animation | 19.2 (26.5) | 22.7 (26.2) | 24 | 280 |
-| `LazyVStack`, all rows at once | 12.5 (12.5) | 23.4 (28.8) | 52 | 303 |
-| `LazyVStack`, 4 rows a frame | 12.5 (12.5) | 17.3 (22.9) | 85 | 402 |
-| `LazyVStack`, 8 rows a frame | 12.5 (15.7) | 22.8 (26.6) | 86 | 445 |
-
-Folded (outer screen, sidebar as the drawer over the tab):
-
-| Build | worst frame, fold ms | worst frame, open ms | late frames | late time ms |
-| --- | --- | --- | --- | --- |
-| `List` (main before), the 50-tab session | 24.7 (40.1) | 36.7 (42.3) | 74 | 625 |
-| `List`, every machine and session | 26.8 (41.5) | 40.7 (43.6) | 77 | 667 |
-| Shipped, the 50-tab session | 12.5 (21.7) | 16.7 (19.5) | 64 | 322 |
-| Shipped, second run | 12.5 (21.8) | 18.0 (25.0) | 28 | 186 |
-| Shipped, every machine and session | 14.6 (25.9) | 16.7 (20.9) | 23 | 170 |
-
-Instruments' Animation Hitches template over the same 21 s run (launch included), folded: hitch
-time 13.2 s before, 2.8 s after; the median hitch 12.1 ms before, 2.4 ms after. The device can't
-screen-record (CoreDevice says the capability isn't supported), so the motion was checked from
-screenshots taken during a run: rows dissolve under the content rising from below, open rows unfurl
-with the chevron mid-turn, and the `+` comes in only after the summary has gone.
-
-Reading it: 12.5 ms is one refresh late at most, which doesn't count as late. With `List` every fold
-and open had a frame 17 to 43 ms long, animated or not. In the stack a fold is never late, and
-opening a few rows a frame cuts the worst open frame by more than half and the late time per run
-by half. The late frames left are short ones (about 13 ms) while the rows settle.
-
-Root cause (Time Profiler on the device, unfolded): 68% of a fold's main-thread time was
-`UICollectionView` `_updatePreferredAttributesForCurrentUpdate`, `List` building cells for the new
-rows and sizing every visible cell again, existing ones too. That is why the earlier attempts
-(no animation above 16 rows, no per-row insets) and adding rows a few per frame inside `List` did
-not help: every step sized the whole screen again. With trivial rows (one `Text`) `List` still took
-18 to 42 ms; a `LazyVStack` folded in under 12.5 ms on its first try.
+On the iPhone Duo (120 Hz, 50-tab session, `-sidebarFoldBench`), `List` had a frame of 17 to 43 ms
+in every fold and open, animated or not, even with rows of one `Text`: 68% of a fold's main-thread
+time was `UICollectionView` sizing every visible cell again
+(`_updatePreferredAttributesForCurrentUpdate`). Turning animation off or adding rows a few per
+frame inside `List` didn't help, since every step sized the whole screen again. In the
+`LazyVStack` a fold is never late (worst frame 12.5 ms, one refresh), and opening 3 rows a frame
+(`SidebarReveal`) cuts the worst open frame by more than half. Measure again with
+`-sidebarFoldBench` after a change to the rows or the fold.
 
 ## Accessibility
 

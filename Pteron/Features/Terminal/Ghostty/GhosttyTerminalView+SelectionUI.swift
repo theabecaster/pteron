@@ -61,7 +61,7 @@ extension GhosttyTerminalView {
     }
 
     /// The cursor's cell, in `gridCell(at:)`'s space.
-    /// Takes the terminal lock (bounded, see docs/terminal-checklist.md "Locks"): asked on a tap.
+    /// Takes the terminal lock (bounded, see docs/ghostty-engine.md, Threads and locks): asked on a tap.
     var cursorGridCell: TerminalGridCell {
         let cursor = core.cursorPosition
         return TerminalGridCell(col: cursor.x, row: scrollSnapshot.maxRow + cursor.y)

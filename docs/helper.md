@@ -22,57 +22,38 @@ computer you own with a recent Rex. To install by hand instead:
 3. Open it once. It asks to send notifications (for the one "Pteron connected" notice per phone),
    then runs in the background and starts again at login.
 
-Pteron Beacon had two names before: Rex DUO Helper (version 0.3.0) and Rex DUO Beacon (version
-0.3.1). A Mac that has `Rex DUO Helper.app` or `Rex DUO Beacon.app` keeps everything it allowed
-and every registered phone: the next update or install leaves one app, `Pteron Beacon.app`, in
-the same Applications folder. Nobody has to do anything for it. The command-line program is
-still `rex-duo-helper`, and the state folder and the log keep the names they have
-(`Rex DUO Helper`), as do the bundle identifier and the address releases come from.
-
-An installed Beacon gets the new version from its own updater, which looks for the folder name
-it knows, so the new version first sits in a folder of the earlier name. About 30 seconds after
-it starts there, it renames that folder to `Pteron Beacon.app` and moves its background job,
-in one step with one restart.
-
-macOS keeps the app's path in its Launch Services record too, and the move takes it along:
-Launch Services is told to forget the earlier path and to record `Pteron Beacon.app`
-(`lsregister -u`, then `-f`). After that the LaunchAgent is written for the new path and loaded.
-If `lsregister` is missing or fails, the move goes on without it.
+Pteron Beacon had two names before: `Rex DUO Helper` (version 0.3.0) and `Rex DUO Beacon`
+(version 0.3.1). A Mac that has one of those apps keeps everything it allowed and every
+registered phone: the next update or install leaves one app, `Pteron Beacon.app`, in the same
+Applications folder, by itself. The command-line program is still `rex-duo-helper`, and the
+state folder and the log keep their earlier name (`Rex DUO Helper`), as do the bundle identifier
+and the address releases come from.
 
 The background job is the LaunchAgent `dev.abrahamgonzalez.rexduo.agent`
 (`~/Library/LaunchAgents/dev.abrahamgonzalez.rexduo.agent.plist`). Its label was
 `dev.abrahamgonzalez.rexduo.helper` in version 0.3.0 and `dev.abrahamgonzalez.rexduo.beacon` in
-version 0.3.1. macOS names and draws a job in System Settings → General → Login Items after the
-app it found when the job's file first appeared, for as long as that file exists, so the label
-moves when the app's name does. The order: the file of the new label is written for the
-program where it is now, the earlier jobs are booted out and the new one loaded, Beacon
-reports in `status.json` that it runs under the new label, and only then are the earlier files
-deleted, every one that is there. A file exists at every moment. If Beacon does not report in
-within 20 s, the new job is booted out, its file removed, the earlier job loaded again from its
-file, and one line goes to the log; the next start tries again. An install, a repair, opening
-the app and the app's move to its name all make this move, and so does a Beacon that finds
-itself running under an earlier label, about 30 s after it started. With the new file and an
-earlier one both there at a start (a move that was cut short), the Beacon under the new label
-boots the earlier jobs out and deletes their files, and one under an earlier label gives way
-to it. `rex-duo-helper status` names the label in use.
+version 0.3.1. macOS names a job in System Settings → General → Login Items after the app it
+found when the job's file first appeared, so the label moves when the app's name does. An
+updated Beacon first runs in the folder and under the label its earlier updater knew, and about
+30 seconds later renames the app, tells Launch Services, and moves the job, in one step with one
+restart; if it does not report in under the new label within 20 s, everything goes back and the
+next start tries again (Relay/README.md, Updates, has the steps). `rex-duo-helper status` names
+the label in use.
 
-In Login Items the person sees a new entry named **Pteron Beacon**, with its icon, once the new
-file is written, and macOS shows its "Background Items Added" notice once. Nothing has to be
-allowed again. The entry of the earlier label, and the one of the app's earlier path, stay
-beside it until about 70 seconds after the earlier file is deleted (measured on macOS 26 for
-the move of version 0.3.1); then macOS drops them, and one entry is left. Someone who switched
-Beacon off in Login Items keeps it off: nothing runs there, so nothing moves, until they
-install or open it again.
+In Login Items a new entry named **Pteron Beacon** appears, with its icon, and macOS shows its
+"Background Items Added" notice once. Nothing has to be allowed again. The earlier entries go
+about a minute after the earlier file is deleted. Someone who switched Beacon off in Login Items
+keeps it off: nothing runs there, so nothing moves, until they install or open it again.
 
 ### Older copies of the app
 
 The Pteron app carries the installer, so a copy of the app from before the name carries an
-installer that knows the two earlier names alone. Against a release that has the name, it
-behaves as follows (`Relay/test-install.sh` runs that installer and holds these outcomes):
+installer that knows the two earlier names alone. Against a release that has the name
+(`Relay/test-install.sh` holds these outcomes):
 
-- **A new install** works and pushes reach the phone. Beacon takes its name as it starts, and
-  the installer goes on with the path it put the app at: the Mac is not asked whether Beacon
-  may show its own notice, and the installer's last sentence names a path that is gone.
+- **A new install** works and pushes reach the phone. Beacon takes its name as it starts, but
+  the installer goes on with the path it put the app at: the Mac is not asked whether Beacon may
+  show its own notice, and the installer's last sentence names a path that is gone.
 - **An install over a Beacon that has its name** downloads the app once more; the copy it
   places gives way to the one that is there. The outcome is the same.
 - **Remove** does not find the app or its background job. It deletes the state folder, so the
@@ -136,8 +117,8 @@ If the new version doesn't start, Beacon puts the previous one back.
 
 Beacon holds the pushes its person would see at a computer anyway, at this computer's desk or at
 a desk elsewhere through the push gateway, until they leave or for 10 minutes at most
-(Relay/README.md, Desk presence). It has no switch; the release list's `desk` and `signed_at`
-fields belonged to one that never shipped, and every reader ignores them.
+(Relay/README.md, Desk presence). It has no switch; a `desk` field in the release list belonged to
+one that never shipped, and every reader ignores it.
 
 ## Opening a dev server in the phone's browser
 
@@ -186,27 +167,24 @@ of the list can't undo a newer one on a Beacon that has seen the newer one. A Be
 just installed has seen none: it follows whichever signed list it is given first, as long as
 that list has not expired (a list is good for 180 days), until it sees a later one. Nothing else on a computer can be switched this way.
 
-Beacon also answers the app's question of which processes are behind a port (their ids,
-names, process groups, the arguments they were started with and their folders, for your own
-processes only), so that Stop and Restart in the app's Ports list work for a server started
-through `npm run dev` and the like. The answer also counts how many programs the shell
-started side by side for that job (`job_members`: 1 for a plain command, more for a pipeline
-such as `npm run dev | tee log`, and nothing when it can't tell), so that the app offers
-Restart only for a plain command. It only reports: Beacon never stops, signals or starts a
-process itself. Arguments go to your phone in that one answer and nowhere else: not to the
-log, a file or the push gateway. Environment variables are never read out.
+Beacon also answers the app's question of which processes are behind a port, for your own
+processes only: each one's id, its parent's, its group and session, its name and program file,
+its working folder, and its arguments. That lets Stop and Restart in the app's Ports list work
+for a server started through `npm run dev` and the like. The answer also counts the programs the
+shell started side by side for that job (`job_members`: 1 for a plain command, more for a
+pipeline such as `npm run dev | tee log`, nothing when it can't tell), so that the app offers
+Restart only for a plain command. Beacon only reports: it never stops, signals or starts a
+process itself. Arguments go to your phone in that one answer and nowhere else: not to the log,
+a file or the push gateway. Environment variables are never read out.
 
-What is returned of a process: its id, its parent's, its group and session, its name and
-program file, its working folder, and its arguments. The arguments have a limit you should
-know. The system hands them over as a run of text that the program itself can write to, and
-nothing in it marks where they end. Beacon returns no arguments at all for a process when
-any of them looks like an environment variable (`NAME=value` with the name in capitals, and
-a few known forms that are not in capitals), or
-when the last one holds a `=` and only empty ones follow it. That costs a few programs
-their Restart (`make CC=clang`). It does not cover everything: a program that wrote over
-its own arguments and left no end mark behind them can still have the text that follows
-them in memory, which may be from its environment, returned as part of its last argument.
-Programs that set their own title usually leave an end mark, and then nothing follows.
+A limit on the arguments: the system hands them over as a run of text the program itself can
+write to, with nothing marking where they end. Beacon returns no arguments at all for a process
+when any of them looks like an environment variable (`NAME=value` with the name in capitals,
+and a few known forms that are not in capitals), or when the last one holds a `=` and only empty
+ones follow it. That costs a few programs their Restart (`make CC=clang`). A program that wrote
+over its own arguments and left no end mark can still have the text that follows them in
+memory, possibly from its environment, returned as part of its last argument. Programs that set
+their own title usually leave an end mark.
 
 The details of both are in `Relay/README.md`, steps 8 and 9.
 

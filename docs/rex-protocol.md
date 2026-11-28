@@ -11,15 +11,16 @@ app relies on; update it when you use a new method or event.
   (`kind`, `platform`, `name` "Pteron", `version`, `label` = device name) and
   `reconnect_token` when resuming, and no `api_min_revision` (see API revisions). The server
   answers `welcome` with `client.id`, `client.reconnect_token`, `limits.max_message_bytes` and
-  the revisions. No welcome in 8 s fails the connect. A welcome that answers a hello with a
-  token also says `resumed`: true when the server continued the client (it kept its ID, its
-  attachments and its streams), false or left out when it started a new one with a new ID, because the
-  token was unknown or had expired. The app counts the new clients (`RexControl.clientGeneration`): a pane's
-  stream that was opened under an earlier client is not resumed (docs/terminal.md, Reconnect).
-- The app pings every 30 s, and on each return to the foreground (no pong in 2.5 s is a drop). On a drop, or a failed first connect, it backs off 1 s → 15 s,
-  reconnects with the token, then resyncs, since events may have been missed. A refused upgrade's
-  HTTP status (401/403: not allowed; 404/5xx: not Rex), the close code and its reason are kept for
-  the offline screen.
+  the revisions. A welcome that answers a hello with a token also says `resumed`: true when the
+  server continued the client (same ID, attachments and streams), false or left out when it
+  started a new one with a new ID (the token was unknown or expired). The app counts the new
+  clients (`RexControl.clientGeneration`): a pane's stream opened under an earlier client is not
+  resumed (docs/terminal.md, Reconnect).
+- The app pings when nothing came in for a while and on each return to the foreground; a missed
+  pong is a drop. On a drop, or a failed first connect, it reconnects with the token, then
+  resyncs, since events may have been missed. Deadlines and waits are `ReconnectPolicy`'s
+  ([architecture.md](architecture.md), Offline). A refused upgrade's HTTP status (401/403: not
+  allowed; 404/5xx: not Rex), the close code and its reason are kept for the offline screen.
 - Close code 1008 has two reasons, and only one of them stops the retries. `no common API
   revision: …` means a retry would be refused the same way: `RexControl` stops (`retryStopped`)
   until the user taps Try Again or the app comes back, and the offline screen says which side to
@@ -29,12 +30,10 @@ app relies on; update it when you use a new method or event.
 
 ## API revisions
 
-Every server so far speaks revisions 0 up to its own newest, and translates each connection to the
+Every server speaks revisions 0 up to its own newest, and translates each connection to the
 revision its welcome names. The app says 24 and no minimum, so the server picks the newest
-revision both have: an older server connects at its own revision, exactly as it did when the app
-said 13, and a newer one translates down to 24. What each revision added, as the app uses it
-(the numbers from the server's own `revision_too_low` messages and Rex's published revision
-history):
+revision both have: an older server connects at its own revision, a newer one translates down
+to 24. What each revision added, as the app uses it:
 
 | Revision | Added | The app |
 | --- | --- | --- |
@@ -67,33 +66,30 @@ The oldest revision the app serves stays 13: servers at 13, 18, 19 and 24 connec
 - The creator list has three states: unknown, known and failed. Unknown and failed both mean no
   answer. A creator that sends no `api.methods` (or no `api.events`) is unknown for methods (or
   events), never "missing".
-- The list is about 70 KB (71233 bytes from a revision-18 server with three creators), so it is
-  read once per server process (`server_status.instance_id`) and revision, on the first sync that
-  meets them, and after that only on `creator_changed` and `hosts_changed`. A resync and a
-  reconnect to the same process at the same revision read nothing. A server that names no
-  process is read once per connection. Across a reconnect at the same revision the last list
-  stays in use. A read that fails never replaces a known list: the list stays, and the next sync
-  reads again. A server's error for the first read is `failed`, and is not asked for again.
+- The list is about 70 KB, so it is read once per server process (`server_status.instance_id`)
+  and revision, on the first sync that meets them, and after that only on `creator_changed` and
+  `hosts_changed`. A resync and a reconnect to the same process at the same revision read
+  nothing. A server that names no process is read once per connection. Across a reconnect at the
+  same revision the last list stays in use. A read that fails never replaces a known list: the
+  list stays, and the next sync reads again. A server's error for the first read is `failed`,
+  and is not asked for again.
 - Unknown welcome fields, features, creators, flavors, events and error codes are ignored; an
   unknown error code is handled by its `status`.
-- `session.create` leaves the new blocks without an owner at every revision (checked at hellos 0,
-  13, 16 and 18 against a revision-18 server): a pane is owned once fit mode takes it
-  (`session.own_block`), as before.
-- Block ownership (checked against a revision-18 server, 2026-11-21). A block follows its
-  owner's size. `terminal.resize` from a client that doesn't own the block answers `{}` and is
-  only kept for later: it applies when that client becomes the owner. `own_block` `take` makes
-  the caller the owner at once (its answer lists each block's owner) and every attached client
-  gets `block_owner_changed {block_id, owner, previous, reason}`. When the owner gives a block up,
-  detaches or loses its connection, it passes to the connected client in line that claimed it
-  most recently, any `take` ahead of every `request`; a
+- `session.create` leaves the new blocks without an owner at every revision: a pane is owned
+  once fit mode takes it (`session.own_block`).
+- Block ownership. A block follows its owner's size. `terminal.resize` from a client that
+  doesn't own the block answers `{}` and is only kept for later: it applies when that client
+  becomes the owner. `own_block` `take` makes the caller the owner at once (its answer lists each
+  block's owner) and every attached client gets `block_owner_changed {block_id, owner, previous,
+  reason}`. When the owner gives a block up, detaches or loses its connection, it passes to the
+  connected client in line that claimed it most recently, any `take` ahead of every `request`; a
   `disown_block` from a client that isn't the owner changes nothing for the owner and takes that
   client out of the line. `session.view` names each block's `owner`. Fit mode relies on all of
   it ([terminal.md](terminal.md), Fit and mirror).
-- `own_block` and `disown_block` need the caller attached to the session (seen 2026-11-23 on a
-  new client after a reconnect). Before the client's `session.bootstrap` the answer is
-  `conflict` (409, "stream is not attached to session …"); after it and before `session.attach`
-  is answered it is `bad_request` (400, "the caller must be a client attached to the session").
-  The app sends neither before the attach is answered.
+- `own_block` and `disown_block` need the caller attached to the session. Before the client's
+  `session.bootstrap` the answer is `conflict` (409, "stream is not attached to session …");
+  after it and before `session.attach` is answered it is `bad_request` (400, "the caller must be
+  a client attached to the session"). The app sends neither before the attach is answered.
   - `reason` says why the owner changed (`BlockOwnerChange.Reason`): `create` (the new owner
     made the block), `take` or `request` (the new owner called `own_block` with that mode),
     `disown` (the previous owner called `disown_block`), `lost` (the previous owner's
@@ -107,13 +103,12 @@ The oldest revision the app serves stays 13: servers at 13, 18, 19 and 24 connec
     that owns nothing.
   - A client that closes its socket ends at once, with no 60 s: its blocks pass on with
     `disconnect`, and the token it held is void. The app's own drop of its control socket
-    (`URLSessionWebSocketTask.cancel()`, as after a missed pong) was seen to end its client
-    this way: the welcome that followed was a new client's.
+    (`URLSessionWebSocketTask.cancel()`, as after a missed pong) ends its client this way: the
+    welcome that follows is a new client's.
   - Events from while a client has no connection are lost: the phone never hears the `lost`
-    or `disconnect` of its own drop. It does not hear the `restore` either, which the other
-    clients get as it reconnects. Its stream says it: the sizes of the time away come with a
-    RESUME, the other client's and then its own.
-  - Checked on a revision-18 server with two throwaway clients and with the app, 2026-11-22.
+    or `disconnect` of its own drop, nor the `restore` the other clients get as it reconnects.
+    Its stream says it: the sizes of the time away come with a RESUME, the other client's and
+    then its own.
 
 ## Messages
 
@@ -128,15 +123,15 @@ The oldest revision the app serves stays 13: servers at 13, 18, 19 and 24 connec
 
 The welcome's `limits.max_message_bytes` (1 MiB by default, 64 KiB at the least) caps every
 message. A request over it closes the connection with 1009, which would fail every call out and
-drop every stream with it. Revision 19's page says: check the size before sending, fail only
-that request, and write a large request in fragments so that pings and pongs can go out while it
-is on its way.
+drop every stream with it. Rex's page says: check the size before sending, fail only that
+request, and write a large request in fragments so that pings and pongs can go out while it is
+on its way.
 
 - `RexControl.send` measures each request's encoded bytes, exactly as they go on the wire,
   against `maxMessageBytes` (64 KiB until a welcome says). A request over it never leaves: it
   fails alone with `message_too_large` (413), and the connection stays. It is not `neverSent`,
   because sending it again can't help; typed input counts it as refused. `post` returns false.
-  The same holds at every revision: the limit is older than revisions 13 to 19.
+  The same holds at every revision.
 - Typed input, the one request that grows with what the user does, goes as consecutive
   `terminal.write`s of at most 64 KiB each, request included, each after the one before it was
   answered (docs/terminal.md, Input). A cut never falls inside a grapheme cluster when it can
@@ -145,7 +140,7 @@ is on its way.
 - `URLSessionWebSocketTask` has no fragments: it sends each message whole, in one frame, and a
   ping waits behind a message on its way. So requests stay small instead: no request the app
   makes is near 64 KiB except typed input, which is cut to that size; at 1 Mbit/s a 64 KiB write
-  takes 0.5 s, inside the pong's 2.5 s.
+  takes 0.5 s, well inside the pong's deadline.
 - Events: up to revision 18 an event over the limit closed the connection with 1009 (`event
   exceeds message limit`), an ordinary drop. From revision 19 the server sends `event_dropped`
   with the same `seq` in its place and the connection stays (Dropped events, below).
@@ -156,10 +151,11 @@ is on its way.
 what closed for about a minute, out of every view, and `client.undo_close` (no arguments) puts the
 caller's newest one back with its old IDs and answers `session_id`, `window_id` and `block_id`;
 `not_found` means nothing is left. The app sends `undoable` only for a close a person made, and
-only at revision 20 or later: Rex's revision history hides the member from older connections. A held block's `block_closed` comes when it is freed, up to a minute
-later; the app follows the view, as always. Its streams end at the close (data close 4000), so a
-pane kept for it is let go when Undo brings it back (docs/goto.md, Undo Close). A destroyed
-session that comes back is announced with `session_created` and attached like a new one.
+only at revision 20 or later (an older connection refuses the field). A held block's
+`block_closed` comes when it is freed, up to a minute later; the app follows the view, as
+always. Its streams end at the close (data close 4000), so a pane kept for it is let go when Undo
+brings it back (docs/goto.md, Undo Close). A destroyed session that comes back is announced with
+`session_created` and attached like a new one.
 
 ## Zoom (revision 21)
 
@@ -170,9 +166,8 @@ zoomed: the tiled zoom when the two are equal, else a float's, drawn in front of
 Before 21, `zoomed_block_id` was the one zoom, which covered the window and ended when focus
 moved. `WindowInfo` reads both into `tiledZoomedBlockID` and `floatZoomedBlockID`, the same at
 every revision, and `zoomsApart` (the field is there) says how a tiled zoom is drawn
-(`zoomCoveringWindow`, `tiledZoomUnderFloats`; docs/terminal.md, Floating windows). New splits,
-moves and focus changes no longer end zooms the old way; the app reads the view, so it shows
-whatever the server reports.
+(`zoomCoveringWindow`, `tiledZoomUnderFloats`; docs/terminal.md, Floating windows). The app
+never decides when a zoom ends; it shows whatever the view reports.
 
 ## `session.transfer_window` (revision 22)
 
@@ -195,17 +190,14 @@ Moves a tab with its running programs to another session: Move to Session (docs/
 
 ## Not used: Program Resume
 
-- `com.superlogical.terminal.program_resume_records` lists the commands programs reported with
-  OSC 7577 to restart them; a command can hold a secret. Not used.
-- The creator list names the fs creator and `program_resume_records` at every revision of a
-  revision-24 server, so the revision those arrived at isn't known; at the latest 24.
+`com.superlogical.terminal.program_resume_records` lists the commands programs reported with
+OSC 7577 to restart them; a command can hold a secret. Not used.
 
 ## The fs block (`com.superlogical.fs`, revision 24 at the latest)
 
 Folders, several items in one stream and folder downloads go through an fs block
 (`FsUploader`, `FsDownloader`, `TarPlan`, `TarReader` in RexKit; `TreeBlocks` in the app;
-[terminal.md](terminal.md), Files). Probed on a revision-24 server (preview.25, macOS) in a
-throwaway session, 2026-11-27.
+[terminal.md](terminal.md), Files).
 
 - **Where a block comes from.** `session.new_block` with flavor `com.superlogical.fs.fs`, in the
   pane's session, label `Pteron #<tag>` (the tunnels' tag; the flavor tells them apart), no
@@ -219,8 +211,8 @@ throwaway session, 2026-11-27.
   `upload_begin` and `download_begin` in `api.methods` for the server's own `host_id`. A pane on
   another host has no fs block of its own, so it keeps the terminal's methods; so does a Windows
   server (the landing folder is `/tmp`, and Go's patterns there read `\` as a separator). No
-  revision is checked and no `RexAPI` entry is needed: a revision-24 server lists the creator at
-  every revision it serves, and an older one doesn't list it.
+  revision is checked and no `RexAPI` entry is needed: a server with the block lists the creator
+  at every revision it serves, and an older one doesn't list it.
 - **Upload.** `upload_begin` takes `ref` (`upload:<uuid>`), `path`, `roots`, `entries` and `size`
   and answers `ticket`, `expires_in_ms` (60000) and the absolute `path`. Then HELLO, WELCOME,
   the archive in binary messages of at most 64 KiB, and one empty message; the server closes with
@@ -228,15 +220,13 @@ throwaway session, 2026-11-27.
   of its own, `pteron-<12 hex>`, so nothing is ever replaced.
   - Nothing appears at the destination before the end: a stream closed early (1000 included) or
     dropped leaves the destination as it was.
-  - After the end the server writes the archive into `/tmp/.rex-fs-<id>` and moves it to the
-    destination when done, about 220 entries a second (13 s for 3,005 small files, probed
-    2026-11-27). Meanwhile `block.close` answers at once and stops it (the stream closes with
-    4000, the staging folder goes, nothing lands); a client that closes its data connection
-    doesn't stop it. `upload_begin` answers at once: nothing is walked. The server reads a
-    30 MB archive of 30,032 small files in about 1 s and puts the entries in place at about 210 a
-    second from the stream's start, done after 143 s; a 300 MB file is written as it arrives and
-    confirmed 40 ms after the end. Nothing shows that work: the data connection answers a ping
-    only once it is over (132 s), and no event comes.
+  - `upload_begin` answers at once: nothing is walked. The server writes the archive into
+    `/tmp/.rex-fs-<id>` and moves it to the destination when done, about 210 to 220 entries a
+    second from the stream's start (30,032 small files took 143 s); a large file is written as
+    it arrives and confirmed about 40 ms after the end. Nothing shows that work: the data
+    connection answers no ping until it is over, and no event comes. Meanwhile `block.close`
+    answers at once and stops it (the stream closes with 4000, the staging folder goes, nothing
+    lands); a client that closes its data connection doesn't stop it.
   - An existing folder is merged into and an existing file replaced, silently: why the app
     never uploads into a folder that may hold the same names.
   - A top-level count other than `roots`, an entry with `..` or an absolute path, and an entry
@@ -264,24 +254,20 @@ throwaway session, 2026-11-27.
 
 "Step back through the focus changes the calling principal made." The app lists the method in
 `RexAPI.minimumRevision` (19, so it is never sent below that) and does not call it: Navigate
-Back and Forward keep the phone's own history (docs/goto.md). What decided it, probed on a
-revision-19 server (preview.23) in a throwaway session, 2026-11-27:
+Back and Forward keep the phone's own history (docs/goto.md). Why, from probes:
 
-- The principal is who the server says the connection is (`server.whoami`). The phone over Tailscale is
-  `kind: tailscale` with the login's `user_id` and the device's `node`; the Rex Mac app on the
-  same computer is `kind: peer`, `uid 501`. Each has a history of its own: after the Mac's
-  principal moved focus between two tabs, a Tailscale client's call answered `reversed: false`,
-  and the Mac's principal's call stepped back.
-- Clients of one principal share its history across connections: a second Tailscale connection
-  from the same login and device stepped back through what the first one did. Whether two
-  devices of one Tailscale login share one history is not known (the server compares
-  `user_id`); if so, the phone's Back would step through another device's moves.
+- The principal is who the server says the connection is (`server.whoami`). The phone over
+  Tailscale is `kind: tailscale` with the login's `user_id` and the device's `node`; the Rex Mac
+  app on the same computer is `kind: peer`, `uid 501`. Each has a history of its own: a
+  Tailscale client's step back ignores what the Mac's principal did.
+- Clients of one principal share its history across connections. Whether two devices of one
+  Tailscale login share one history is not known (the server compares `user_id`); if so, the
+  phone's Back would step through another device's moves.
 - Focus is the session's, not the client's: a step back moves the session's active tab and
-  focused pane for every client attached to it, the Mac app included. After the Mac's principal
-  moved to tab 2, a Tailscale client's step back moved the session to tab 1.
-- The server records focus after the session methods a client calls (`session.view` reads were
-  seen to record nothing). The phone's focus_window and focus_block are recorded; the panes the
-  phone pages on its own (a tab swipe's landing, docs/terminal.md) are not.
+  focused pane for every client attached to it, the Mac app included.
+- The server records focus after the session methods a client calls (`session.view` reads
+  record nothing). The phone's focus_window and focus_block are recorded; the panes the phone
+  pages on its own (a tab swipe's landing, docs/terminal.md) are not.
 - There is no method to step forward.
 
 ## Methods used
@@ -289,8 +275,8 @@ revision-19 server (preview.23) in a throwaway session, 2026-11-27:
 - Sessions: `session.bootstrap` (`event_scope: "all"`), `attach`, `view`, `list`, `create`,
   `destroy`, `set_label`, `new_window`, `close_window`, `set_window_label`, `focus_window`,
   `new_split`, `focus_block`, `zoom_block`, `resize_pane` (ratio 0.05–0.95), `own_block`
-  (`mode: "take"`), `disown_block`, and for Arrange and the sidebar's reorder `swap_blocks`,
-  `move_block`, `move_window` and `move` ([terminal.md](terminal.md), Arrange;
+  (`mode: "take"`), `disown_block`, `transfer_window`, and for Arrange and the sidebar's reorder
+  `swap_blocks`, `move_block`, `move_window` and `move` ([terminal.md](terminal.md), Arrange;
   [sidebar.md](sidebar.md), Reorder), and for floating windows `set_layer_state` (raise with
   `focus`, Minimize, show again; [terminal.md](terminal.md), Floating windows). The phone never
   sends `resize_layer`, `raise_layer`, `close_layer` or `float_block`.
@@ -300,12 +286,13 @@ revision-19 server (preview.23) in a throwaway session, 2026-11-27:
   `layer_id` gets an ID from the layer's first block, and a layer without four numbers in
   `bounds` isn't drawn.
 - A session outlives its last tab: after the last pane closes (`block_closed`, `window_closed`) it
-  stays listed with an empty `session.view` (checked on preview.21, revision 18, with
-  `exit-empty: false`). `session.close_window` on the active tab makes the next tab active, else
-  the previous one. What the app shows then: [architecture.md](architecture.md), When the tab on
-  screen closes.
+  stays listed with an empty `session.view` (with `exit-empty: false`). `session.close_window` on
+  the active tab makes the next tab active, else the previous one. What the app shows then:
+  [architecture.md](architecture.md), When the tab on screen closes.
 - Other: `block.close`, `hosts.list`, `block_creator.list`, `data.connect`, `client.keymap`,
-  `client.action`, `client.key`, `client.reply`.
+  `client.action`, `client.key`, `client.reply`, `client.undo_close`, and for the push helper
+  `client.list` and `client.perform` ([notifications.md](notifications.md), Contract between
+  app and helper).
 - Folders: `session.new_block`, `session.list_blocks` and `block.close` for fs blocks, and
   `com.superlogical.fs.upload_begin` and `download_begin` (The fs block).
 - Ports: `session.new_block` (dial tunnels), `session.list_blocks` (the sweep),
@@ -316,7 +303,9 @@ revision-19 server (preview.23) in a throwaway session, 2026-11-27:
   this device's login), `session.list`, `client.list` (is a helper there).
 - Terminal block: `size`, `format` (`vt` with the `extra_*` flags for the screen, `text` for tab
   previews, `text` with `trim` and `unwrap` or `html` for Share's All Output), `blob_read`,
-  `write`, `resize`, `clear`, `title`, `process`, `program_status`, `upload_begin`,
+  `write`, `resize`, `clear`, `title`, `process`, `program_status`, `input_mode` (predicted echo,
+  [terminal.md](terminal.md), Predicted echo; installing the helper,
+  [notifications.md](notifications.md)), `upload_begin`,
   `download_begin`, `list_dir`, `ports`.
 
 ## Ordered calls
@@ -336,8 +325,8 @@ it. `session.move` isn't ordered, so the app sends one at a time.
 - `blob_read` with that `id`, `offset` (bytes of content received so far) and `max_bytes` answers
   `data`, `total` and `eof`. `max_bytes` counts the JSON-encoded string, so `data` can be shorter
   than asked. `data` never ends inside a character. An `offset` inside a character returns one
-  U+FFFD for each byte from there to the next character (probed on a revision-18 server, macOS),
-  so a read that starts at a cut counts each leading U+FFFD as one byte, not three.
+  U+FFFD for each byte from there to the next character, so a read that starts at a cut counts
+  each leading U+FFFD as one byte, not three.
 - `id` 0 reads the newest result, whatever made it, so the reader always sends its own `id`. A
   concurrent `format` (tab previews, a reconnect's screen read, another phone) can evict it:
   `not_found`, after which the read starts over once.
@@ -374,15 +363,15 @@ one call per folder shown.
 
 `upload_begin` and `download_begin` give a ticket for a data connection (`GET /api/data`) with
 subprotocol `rex.data.bytes.v1`, with the same HELLO, WELCOME and REJECT as a terminal stream.
-`/llms.txt` doesn't describe an upload's bytes. This is what probes of Rex servers showed (revision
-13 on Linux, 16 on macOS), checked with SHA-256; `BytesStream` in RexKit records it.
+`/llms.txt` doesn't describe an upload's bytes; this is what probes of macOS and Linux servers
+showed, and `BytesStream` in RexKit records it.
 
 - **Upload.** After the WELCOME the client sends the file as binary messages of at most 64 KiB (a
   1 MiB message drops the connection), then one empty binary message: the file is complete. The
   server moves it into place and closes with 1000. Until then the bytes sit in `<name>.partial`.
 - **Pings.** The server answers a WebSocket ping on an upload's connection before the file's
-  bytes begin, and after that only once the file has ended (revision 18): the answers can't pace
-  an upload. The control connection answers at once, and the app paces with it (`UploadPacer`).
+  bytes begin, and after that only once the file has ended: the answers can't pace an upload.
+  The control connection answers at once, and the app paces with it (`UploadPacer`).
 - **Wrong size.** Ending short of `size`, or sending past it, closes with 4006 `data stream broke
   a rule` and aborts the batch.
 - **Cancel.** Any other end before the empty message, a close with 1000 included, aborts the
@@ -416,8 +405,9 @@ subprotocol `rex.data.bytes.v1`, with the same HELLO, WELCOME and REJECT as a te
 ## Events handled
 
 - Top level: `session_created`, `session_destroyed`, `session_moved` (`session.list`, read as for
-  a dropped one below), `hosts_changed` (hosts, then creators), `keymap_changed`, `client_joined`, `client_left`, `client_prompt_requested`,
-  `client_prompt_ended`, `event_dropped`, `session_event`.
+  a dropped one below), `hosts_changed` (hosts, then creators), `keymap_changed`, `client_joined`,
+  `client_left`, `client_prompt_requested`, `client_prompt_ended`, `event_dropped`,
+  `session_event`.
 - Inside `session_event`: `session_view_changed` (re-read if the revision is newer),
   `session_label_changed`, `block_created`, `block_event`, `creator_changed` (re-read the
   creators), and `window_created`, `window_closed`, `window_label_changed`,
@@ -433,24 +423,24 @@ subprotocol `rex.data.bytes.v1`, with the same HELLO, WELCOME and REJECT as a te
 
 ### Progress and notices (terminal block events)
 
-| Event | Payload, as Rex preview.21 sends it |
+| Event | Payload |
 | --- | --- |
 | `progress_report` | `state` set, indeterminate, pause, error or remove; `progress` 0 to 100 (the schema allows 255, the app clamps). `\e]9;4;1` without a value comes as `set` with 0, `\e]9;4;2` as `error` alone. Repeats are sent, also identical ones. No method reads the current value. |
 | `desktop_notification` | `title` (empty for OSC 9) and `body` |
 
 Compatibility: neither is in any `llms.txt`; both are listed at runtime in the terminal creator's
-`api.events` (`block_creator.list`), seen on rev-13 builds and on preview.20 and .21. The app uses
-them only for blocks whose host's terminal creator lists them (`ServerConnection.sendsEvent`); an
-unknown or failed creator list counts as absent. Without them the app shows no ring and no notice,
-exactly as before. Nothing is probed or sent for either. Unknown `state` values are ignored.
+`api.events` (`block_creator.list`). The app uses them only for blocks whose host's terminal
+creator lists them (`ServerConnection.sendsEvent`); an unknown or failed creator list counts as
+absent. Without them the app shows no ring and no notice. Nothing is probed or sent for either.
+Unknown `state` values are ignored.
 
 ## Dropped events (`event_dropped`, revisions 17 to 19)
 
 The server sends `event_dropped` in place of an event it couldn't send, with that event's `seq`,
-so no gap shows. From revision 19 that includes an event over the message limit, which closed
-the connection before. `ServerConnection.recover(dropped:)` reads back only what the lost event would
-have changed (`DroppedEvent.recovery`); a full sync is the last resort, because it reads every
-session and features hang work on it.
+so no gap shows. From revision 19 that includes an event over the message limit.
+`ServerConnection.recover(dropped:)` reads back only what the lost event would have changed
+(`DroppedEvent.recovery`); a full sync is the last resort, because it reads every session and
+features hang work on it.
 
 | Dropped `event_type` | Read again |
 | --- | --- |
@@ -466,8 +456,9 @@ session and features hang work on it.
 | any other type without one | a full sync |
 
 A status read back this way doesn't toast, as after any resync. A dropped `desktop_notification`
-is lost. A dropped `progress_report` clears that pane's ring until the next report (its handler). A metadata read is older than any live event that arrives while it is out: what such an
-event set (status, title or process) is kept, and the read fills in the rest.
+is lost. A dropped `progress_report` clears that pane's ring until the next report (its handler).
+A metadata read is older than any live event that arrives while it is out: what such an event set
+(status, title or process) is kept, and the read fills in the rest.
 
 ## Prompts (`client_prompt_requested`, revision 17)
 
@@ -536,4 +527,4 @@ removes one, and it survives a server restart without an owner, so its maker clo
 `conn:<uuid>` and subprotocol `rex.data.bytes.v1`, then HELLO and WELCOME, then bytes both ways
 (`TunnelRelay` records the rules: at most 64 KiB per message from the client, an empty message
 is a half-close, 1001 with no bytes is a refused target, 4000 a closed block, 4006 not the
-owner). The same holds on macOS and Linux servers (preview.21, revision 18).
+owner). The same holds on macOS and Linux servers.

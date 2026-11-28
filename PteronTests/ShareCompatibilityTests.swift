@@ -3,7 +3,7 @@ import XCTest
 @testable import Pteron
 
 /// Share against a Rex server in this process at the revisions the app meets (docs/rex-protocol.md,
-/// Compatibility): All Output shows and reads at each, hides where the creator list lacks its two
+/// API revisions): All Output shows and reads at each, hides where the creator list lacks its two
 /// methods, and a reconnect mid-read stops the read and leaves a Retry that reads again.
 @MainActor
 final class ShareCompatibilityTests: XCTestCase {

@@ -1,7 +1,7 @@
 import Foundation
 
-/// How long a fitted pane keeps its claim after the app leaves the front (docs/terminal.md, Fit
-/// and mirror, "Back from the background").
+/// How long a fitted pane keeps its claim after the app leaves the front (docs/terminal.md, The
+/// catch-up fence, "Back from the background").
 ///
 /// Giving the pane back at once cost a quick return two resizes: the Mac's size as the app
 /// left, the phone's as it came back. An agent such as Claude Code reprints its whole transcript

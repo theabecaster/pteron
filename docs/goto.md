@@ -177,13 +177,13 @@ Not here, with the reason:
 
 - A session opens its active tab, a tab its tab, a pane its pane: through `AppModel.openPane`
   and the tab selection, which move the Mac's focused pane and active tab exactly as a pane
-  switch, Agents mode and Jump to Waiting do today (`session.focus_block`,
-  `session.focus_window`). Nothing new reaches the Mac.
+  switch, Agents mode and Jump to Waiting do (`session.focus_block`, `session.focus_window`).
+  Nothing new reaches the Mac.
 - An app command runs as its key does (`AppModel.perform`).
 - A Lua or block action runs on the target pane through its input queue, behind the keys typed
   before it, with `origin: "palette"`. With no tab, a Lua action runs with no `session_id`.
   Without a connection it fails at once with "Didn't run Dev Layout: the connection dropped."
-  and is never sent later; a key-bound action keeps today's queue. After 1.5 s without an answer
+  and is never sent later; a key-bound action keeps the input queue's rules. After 1.5 s without an answer
   "Running Dev Layout…" shows on the notice job lane, for about 6 s at most.
 - A place that closed meanwhile says "That tab closed." and leaves the recents.
 
@@ -212,15 +212,14 @@ about a minute, and the app shows it.
 - **What can be undone.** Every close a person makes in the app asks to be undoable from revision
   20 (`ServerConnection.personsClose`): Close Pane, Close Other Panes, Close Tab (the menus, the
   swipe, Close Other Tabs), Close Session. The closes the app makes by itself never do: the
-  placeholder of Move Pane to New Tab, a port's tunnel, the helper's setup tab. The close
-  questions stay as they are.
+  placeholder of Move Pane to New Tab, a port's tunnel, the helper's setup tab.
 - **Which computer.** The tab on screen's, else any online one that can; the row shows only then.
   With nothing left the server answers `not_found`: "Nothing to undo." Any other failure says
   why, as any other call does.
 - **Showing it.** The answer names the session, tab and pane, which open as Go to Anything opens a
   pane (`openPane`). A session that comes back is announced as new (`session_created`) and the
-  app attaches it; the tab waits for its view, 5 s at most. What shows when a tab closes
-  (`CloseNext`) is unchanged: Undo then moves back to what came back.
+  app attaches it; the tab waits for its view, 5 s at most. The close runs `CloseNext` as any
+  close does; Undo then moves to what came back.
 - **Streams.** The close ended the panes' streams. A pane the app kept off screen since then
   (`TerminalHostPool`) still holds that ended stream, so Undo lets every such pane of that
   computer go first (`dropClosedPanes`), and the pane opens a fresh one when it shows.
@@ -241,10 +240,9 @@ Mac Actions page; the user's init.lua wins). With no tab on screen they work too
   or pane closed, its pane is hidden in a minimized float, its computer isn't loaded) is passed
   over, and dropped when a step goes past it; with nowhere to go, Back bumps and nothing changes.
 - **Only the phone's moves.** A focus change made on the Mac moves nothing in the list.
-- **Not `focus_history.reverse`** (revision 19): its history is the Tailscale login's, may be
-  shared with the owner's other devices, leaves out the panes the phone pages on its own, has no
-  step forward, and exists only from revision 19. The phone's history works at every revision.
-  docs/rex-protocol.md, Focus history, has the probes.
+- **Not `focus_history.reverse`**: its history is the Tailscale login's (maybe shared with other
+  devices) and leaves out the panes the phone pages on its own; it has no step forward and needs
+  revision 19. docs/rex-protocol.md, Focus history, has the probes.
 
 ## Questions (rex.ui, revision 17)
 
@@ -271,8 +269,8 @@ key bar was back above the keys.
 
 ## Measurements
 
-Simulator (iPad Pro 13-inch M5, iOS 27.2), optimized build (`SWIFT_OPTIMIZATION_LEVEL=-O`,
-`GoToPerfTests`, `GoToSourcePerfTests`), 2026-11-20:
+Simulator (iPad Pro 13-inch M5), optimized build (`SWIFT_OPTIMIZATION_LEVEL=-O`,
+`GoToPerfTests`, `GoToSourcePerfTests`):
 
 | Work | Budget (device) | Measured |
 |---|---|---|
@@ -281,5 +279,4 @@ Simulator (iPad Pro 13-inch M5, iOS 27.2), optimized build (`SWIFT_OPTIMIZATION_
 | Query, 2k items | ≤ 4 ms | < 1 ms |
 | Query, 10k items, worst of six | ≤ 20 ms | 10 ms |
 
-A Debug build is about ten times slower. Instruments' Animation Hitches on the Duo (300 tabs,
-typing six letters) is still to be recorded; it needs an install on the phone.
+A Debug build is about ten times slower.

@@ -121,16 +121,15 @@ sources and fails on a line that breaks one of these:
   case starts again from when this run of the app first saw the agent waiting, so the time
   shown is never too long.
 - **`msg`** is clipped to 200 characters. Only the large widget shows it.
-- **`busy`** (optional, added later without changing `v`): a machine's agents that don't
-  wait, as the strip's tiles draw them: `kind` (left out for another program), `symbol` and
-  `state` (`error`, `working`, `done`, `idle`), the most urgent first. Nothing private, about
-  40 bytes each, and at most 12 over all machines together: errors first wherever they are,
-  then working, done and idle (`GlanceSummary.capBusy`). A machine the app hasn't reached keeps
-  its last list. Built in the writer's one pass from `agentKeys`, with no metadata read. The
-  watch and older widgets ignore it; a widget reading a file without it draws each machine's
-  counts where the strip would be. It is not part of the picture that decides a reload
-  (`visibleKey`), so it adds no reload: a change of state changes the counts anyway, and
-  agents that only trade states show at the next reload.
+- **`busy`** (optional): a machine's agents that don't wait, as the strip's tiles draw them:
+  `kind` (left out for another program), `symbol` and `state` (`error`, `working`, `done`,
+  `idle`), the most urgent first. Nothing private, and at most 12 over all machines: errors
+  first wherever they are, then working, done and idle (`GlanceSummary.capBusy`). A machine the
+  app hasn't reached keeps its last list. Built in the writer's one pass from `agentKeys`, with
+  no metadata read. The watch ignores it; a widget reading a file without it draws each
+  machine's counts where the strip would be. It is not part of the picture that decides a
+  reload (`visibleKey`), so it adds no reload: agents that only trade states show at the next
+  reload.
 - **`palette`**: the themes chosen for Dark Mode and for Light Mode, each with its own
   `appearance`, since a dark theme can be the one chosen for Light Mode.
 - Every date is a whole second.
@@ -182,8 +181,7 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
 - **Data Protection Complete** (`com.apple.developer.default-data-protection` on the
   extension) redacts nothing by itself. It makes Complete the default protection of files the
   extension creates (it creates none) and tells the system the widget's content is protected
-  while the phone is locked, which is when the system is expected to ask for privacy. That
-  has not been seen on a device yet.
+  while the phone is locked, which is when the system is expected to ask for privacy.
 - **A message is never on the Lock Screen:** no accessory carries one
   (`GlanceDigest.accessory`), and the large widget's is private.
 - **Locked, the accessories carry counts only.** When the system asks for redaction, the
@@ -195,31 +193,27 @@ shown, and never reloads by itself (`GlanceTimeline`, `GlanceFreshness`):
 ### Design
 
 - **Colors** come from the snapshot's palette, slot by the system's mode, drawn in the
-  theme's own appearance (`GlanceColors`): the widget's background is the app's canvas, tiles
-  are the sidebar color, secondary and tertiary text the app's, all through the same
-  perceptual `Color.mix` and fractions as `TermTheme.Chrome` (a test in the app compares them
-  for every theme in both slots, and every agent's tint and glyph color with the app's).
+  theme's own appearance (`GlanceColors`), through the same `Color.mix` and fractions as
+  `TermTheme.Chrome` (a test in the app compares them for every theme in both slots, and every
+  agent's tint and glyph color with the app's).
 - **State** has the board's colors (waiting ANSI 3, error 1, working 4, done 2) and always a
   word or a badge as well. A 1.5 pt edge in the most urgent state's color shows only while
-  someone waits, fails or works. The headline takes its state's color, as on the watch ("All
-  quiet" plain; "Last seen" and an old snapshot never a warning color).
-- **The canvas** (`GlanceCanvas`) carries one faint, still wash at the top: the most urgent
-  state's color while someone waits, fails or works, else the theme's accent.
-- **Glide** (`GlanceGlide` and `GlanceGlideMark` in GlanceUI, the `mark.open` symbol in the
-  icon's gradient over a soft indigo halo, shared with the watch) stands where nothing needs a
-  look; working or failing with nobody waiting, it sits in the state's still ring.
-- **Tiles** (`GlanceTileView`): the sidebar's rule, a circle for an agent and a rounded square
-  for another program, in the agent's tint with its glyph (`kind`, else `symbol`), and the
-  state's badge: the raised hand, the x, the check, or the sidebar's dot for working. Idle and
-  last-known tiles are dimmed. A waiting agent's tile opens its pane; the others open what the widget opens.
-- **`GlanceRing`** is the board's ring with no motion. Its glyph is never recolored: a mark is
-  in the foreground, Claude's in Anthropic's Clay, and only a kind without a mark takes its
-  tint (`AgentGlyph.ink`); the state's color is on the ring, never on the mark.
-- **Type**: the system font. Headline 22 pt bold in small, 20 pt elsewhere; names 13 pt
-  semibold; state words 12 pt semibold; places 11 pt. Dynamic Type stops at xxLarge.
+  someone waits, fails or works. The headline takes its state's color ("All quiet" plain;
+  "Last seen" and an old snapshot never a warning color). `GlanceCanvas` carries one faint,
+  still wash at the top in the same color, else the theme's accent.
+- **Glide** (`GlanceGlide` and `GlanceGlideMark` in GlanceUI, shared with the watch) stands
+  where nothing needs a look; working or failing with nobody waiting, it sits in the state's
+  still ring.
+- **Tiles** (`GlanceTileView`) follow the sidebar's rule: a circle for an agent, a rounded
+  square for another program, the agent's tint and glyph (`kind`, else `symbol`), and the
+  state's badge. Idle and last-known tiles are dimmed. A waiting agent's tile opens its pane;
+  the others open what the widget opens.
+- **`GlanceRing`** is the board's ring with no motion. Its glyph is never recolored: only a
+  kind without a mark takes its tint (`AgentGlyph.ink`); the state's color is on the ring,
+  never on the mark.
+- **Type**: the system font; Dynamic Type stops at xxLarge.
 - **Tinted, clear and vibrant** (`GlanceStyle`): no palette; text is primary or secondary,
-  never under 60%; the count and the ring's lines take the system's accent; a state reads
-  from its shape and its word.
+  never under 60%; a state reads from its shape and its word.
 - **A text that updates itself needs a frame of a set width**, never `fixedSize()`: on the
   Home Screen that leaves the whole widget empty. A view drawn in a test doesn't show it, so
   a change to the wait time's layout is checked on a simulator's Home Screen.
@@ -285,12 +279,10 @@ watch:  WatchSession (delegate) ─▶ WatchInbox decides ─▶ the watch's gla
   | The app goes to the background | a change still held goes now, inside the same background task as the file's last write |
   | The count of waiting agents changed, a complication is on a face, and the day's budget has transfers left | also `transferCurrentComplicationUserInfo`, which the system delivers ahead of the queue |
 
-- **The worst case** is 120 deliveries an hour (one each 30 s), and only while the iPhone app
-  is in front and who waits changes all the time; counts that change without a change in who
-  waits make 60 an hour; an app that is open and quiet makes 4 an hour; a closed or suspended
-  app makes none. A delivery is 1 to 4 KB. The system keeps only the newest application
-  context, and hands it to a watch app that isn't running when it sees fit. Complication
-  transfers are at most 50 a day, by the system's budget.
+- **The worst case** is 120 deliveries an hour, only while the iPhone app is in front and who
+  waits changes all the time; an open, quiet app makes 4 an hour, a closed or suspended one
+  none. The system keeps only the newest application context. Complication transfers are at
+  most 50 a day, by the system's budget.
 - **`WatchSession`** (the watch's delegate) hands each payload to **`WatchInbox`** (GlanceModel,
   pure), the one writer of the watch's `glance/snapshot.json`, in the watch's own container of
   the same App Group. The bytes are written as they arrived. Which payload wins:
@@ -422,7 +414,7 @@ phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status 
   well inside the watch's 30 s.
 - **In a test launch** (`-glanceLive YES -autoOpen <label>`) the phone types only into panes of
   the session with that label; any other launch that shows made-up state takes no action.
-- Not seen on a device yet: the wake of a suspended or closed app by a real watch, how fast an
+- Unchecked on a device: the wake of a suspended or closed app by a real watch, how fast an
   unreachable phone fails there, and Enter and Control-C as raw bytes in a program that asked
   for the kitty keyboard protocol.
 
@@ -463,37 +455,29 @@ phone:  WCSessionLink ─▶ GlanceBridge ─▶ GlanceActions: read the status 
   place (`GlanceDigest.accessory(private:)`), and no complication ever carries a message.
 - **The file** holds what the phone's does, protected until the first unlock after a restart.
   It holds no server address, token or secret, and it stays on the watch.
-- How the system redacts on a real watch (wrist down with Always On, locked) has not been seen
-  on a device yet.
+- Unchecked on a device: how the system redacts on a real watch (wrist down with Always On,
+  locked).
 
 ### Design
 
 - **Colors:** the theme chosen for Dark Mode when it is a dark theme, else the default dark
   theme (`WatchScreen.palette`), over the watch's black. Row platters are the sidebar color at
   90%. State has the board's colors and always its words.
-- **The brand** (`GlanceGlide` in GlanceUI, from `Brand/AppIcon.icon`): behind every screen, the icon's
-  deep blue at the top fading to black by the middle (`containerBackground` for the
-  navigation); black with the wrist down. On a screen with nothing to list, Glide is drawn in
-  the icon's gradient (mint, cyan, sky, indigo, violet) over a soft indigo halo.
-- **State colors:** the headline takes its state's color ("2 waiting" waiting, "3 working"
-  working, "All done" done, "1 error" error); "All quiet" is the foreground. An old snapshot
-  keeps the foreground, dimmed, and "Last seen" stays secondary: a stale watch never shows a
-  warning color. A machine's counts are each in their state's color (idle secondary), except
-  on a machine that is down or in an old snapshot, where they are all secondary.
+- **The brand** (`GlanceGlide` in GlanceUI, from `Brand/AppIcon.icon`): behind every screen,
+  the icon's deep blue fading to black (`containerBackground`); black with the wrist down.
+- **State colors:** the headline takes its state's color; "All quiet" is the foreground. An old
+  snapshot keeps the foreground, dimmed, and "Last seen" stays secondary: a stale watch never
+  shows a warning color. A machine's counts are each in their state's color (idle secondary),
+  except on a machine that is down or in an old snapshot, where they are all secondary.
 - **Contrast:** every text color reads at 4.5:1 or more on black, on a platter and on the top
   of the ground, for the default theme (`WatchStyleTests`). Secondary text is the foreground at
   72%, not the app's 55%, which reads under 4.5:1 at the watch's sizes.
-- **Type:** the system's text styles (`.title3` bold for the headline, `.headline` for names,
-  `.footnote` semibold for state words, `.caption2` for places), which follow the person's
-  text size; rows wrap.
-- **Rings:** `GlanceRing`, 28 pt in a row and 44 pt on the detail screen. The longest-waiting
-  agent's ring in the list, and a waiting agent's ring on its own screen, have a soft glow in
-  the waiting color.
-- **Native:** a `NavigationStack` and a `List`; the app's name is the title beside the clock.
-  Double Tap is not claimed.
+- **Type:** the system's text styles, which follow the person's text size; rows wrap.
+- **Rings:** `GlanceRing`. The longest-waiting agent's ring in the list, and a waiting agent's
+  ring on its own screen, have a soft glow in the waiting color.
+- **Native:** a `NavigationStack` and a `List`. Double Tap is not claimed.
 - **Complications** take the watch face's tint (`widgetAccentable` on the count and the first
   line). On a face in full color the count takes the waiting color while someone waits.
-- **The icon** is the app's (`Brand/AppIcon.icon`).
 
 ### Motion
 
@@ -510,8 +494,7 @@ Short and soft, in the app only (`WatchMotion`). No haptic or sound goes with an
 - **One loop only:** the breath. Everything else runs once and stops.
 - **The first entrance waits 0.25 s** after the screen appears, so it isn't spent behind the
   system's own opening of the app.
-- **The zoom transition** (`navigationTransition(.zoom)`) was tried: watchOS 27.2 kept its own
-  slide, so it is not used.
+- No zoom transition: on watchOS 27.2 `navigationTransition(.zoom)` keeps the system's slide.
 - The app shows nothing until it has read its file (`WatchModel.loaded`), so "Open Pteron on
   iPhone" never flashes, and Glide never glides in, on the way to the list.
 
@@ -543,27 +526,23 @@ xcrun simctl install <watch-sim-id> build/dd-watch/Build/Products/Debug-watchsim
 xcrun simctl launch <watch-sim-id> dev.abrahamgonzalez.rexduo.watchkitapp -glanceDemo several
 ```
 
-- The watch app takes `-glanceDemo <scenario>` (Debug builds) as the iPhone app does: it puts
-  that made-up snapshot in the watch's own file. `-glanceDetail YES` with it opens on the
-  first waiting agent's screen, and `-glanceDetail later` opens it 2 s after launch, as a tap
-  would (a simulator's watch can't be tapped from the command line). `-glanceDemoThen
-  <scenario>` replaces the snapshot 4 s after launch, as a delivery would. `-glanceDim YES`
-  draws as with the wrist down (a simulator has no wrist to lower). For the actions:
-  `-glanceScroll YES` opens the agent's screen at its end, `-glanceAsk enter|interrupt` with
-  that question up, `-glanceOutcome sending|sent|changed|unreachable|unconfirmed|noPhone`
-  with that line and nothing sent, and `-glanceConfirm enter|interrupt` sends that action 6 s
-  after launch as a confirmed tap would (the phone logs `GLANCE_ACTION <kind> <answer>`). The
-  last one types into a real pane: use it only with the phone's app launched or saved as
-  `-glanceLive YES -autoOpen zz-…`, so the watch knows that session alone. To see Reduce Motion:
-  `xcrun simctl spawn <watch-sim-id> defaults write com.apple.Accessibility ReduceMotionEnabled
-  -bool YES`, then launch again.
-- To record the motion: `xcrun simctl io <watch-sim-id> recordVideo --codec=h264 motion.mp4`
-  in the background, launch, then stop it with an interrupt.
+- The watch app takes `-glanceDemo <scenario>` (Debug builds) for its own file, with
+  `-glanceDetail YES|later`, `-glanceDemoThen <scenario>` and `-glanceDim YES`
+  ([debug-args.md](debug-args.md)). For the actions: `-glanceScroll YES` opens the agent's
+  screen at its end, `-glanceAsk enter|interrupt` with that question up,
+  `-glanceOutcome sending|sent|changed|unreachable|unconfirmed|noPhone` with that line and
+  nothing sent, and `-glanceConfirm enter|interrupt` sends that action 6 s after launch as a
+  confirmed tap would (the phone logs `GLANCE_ACTION <kind> <answer>`). **`-glanceConfirm`
+  types into a real pane:** use it only with the phone's app launched or saved as
+  `-glanceLive YES -autoOpen zz-…`, so the watch knows that session alone.
+- Reduce Motion: `xcrun simctl spawn <watch-sim-id> defaults write com.apple.Accessibility
+  ReduceMotionEnabled -bool YES`, then launch again. To record the motion: `xcrun simctl io
+  <watch-sim-id> recordVideo --codec=h264 motion.mp4` in the background, then interrupt it.
 - The iPhone app's `-glanceDemo` also sends its scenario to a paired watch simulator. A Debug
   build logs `GLANCE_WATCH seq=<n> complication=<0|1>` for each delivery (`GLANCE_WATCH demo
   bytes=<n>` for a demo) and `GLANCE_WATCH <event> activated=… paired=… installed=…` for each
   change of the session. Between two simulators the session can take a minute or two to
-  activate after a launch, and reports the watch app as installed a little after that.
+  activate after a launch.
 - A watchOS simulator runtime is needed to run the watch app and its tests, not to build
   them. Delete a paired watch simulator a test made (`xcrun simctl delete <id>`).
 
@@ -595,16 +574,12 @@ controls for Control Center, the Lock Screen's bottom slots and the Action butto
   app's catalog would draw blank. Each template has three weights with the same path layout, so
   the system can set it at any weight; `xcrun actool` on the catalog says so when one is wrong.
 - On a locked phone the system asks for the unlock before it opens the app.
-- **Why not `OpenURLIntent` alone.** Checked on the iOS 27.2 simulator, by tapping the control
-  in Control Center:
-
-  | Action of the button | Result |
-  |---|---|
-  | `OpenURLIntent(rexduo://…)` itself | fails: `CHSErrorDomain 1107`, "Encountered action intent without linkAction" |
-  | an intent in the extension only, returning `.result(opensIntent: OpenURLIntent(…))` | "succeeds"; the app never opens |
-  | the same with `openAppWhenRun` | fails |
-  | an intent in both targets with `openAppWhenRun`, returning `opensIntent: OpenURLIntent(…)` | the app opens; the URL never reaches `onOpenURL` |
-  | an intent in both targets with `openAppWhenRun` that opens the URL itself (what ships) | the app opens and takes the link, from a cold launch too |
+- **Why not `OpenURLIntent`.** On the iOS 27.2 simulator: `OpenURLIntent` as the button's
+  action fails (`CHSErrorDomain 1107`); an extension-only intent returning
+  `opensIntent: OpenURLIntent(…)` never opens the app (and fails with `openAppWhenRun`); an
+  intent in both targets returning `OpenURLIntent` opens the app but the URL never reaches
+  `onOpenURL`. Only the shipped form, an intent in both targets with `openAppWhenRun` that opens
+  the URL itself, takes the link, from a cold launch too.
 
 ## Links
 
@@ -690,26 +665,23 @@ nobody send nothing to any server.
 
 ## Testing
 
-- `xcrun simctl openurl <sim> rexduo://waiting` fires a link. A Debug build logs one
-  `OPEN_LINK <link> run|queued` line for each link it takes and one `OPEN_WAITING <step>` line
-  when a jump ends. `OPEN_LINK <link> refused` means a control's intent ran in the app and the
-  system would not open its URL. Read them with `xcrun simctl spawn <sim> log show --last 1m --predicate 'eventMessage
-  CONTAINS "OPEN_"'`.
+- `xcrun simctl openurl <sim> rexduo://waiting` fires a link; the `OPEN_…` log lines are in
+  [debug-args.md](debug-args.md). Read them with `xcrun simctl spawn <sim> log show --last 1m
+  --predicate 'eventMessage CONTAINS "OPEN_"'`.
 - In a test launch (`-autoOpen <label>`) a link jumps only to agents in the session with that
   label, and a pane link opens only a pane of that session, so a test can't open, focus or
   resize a pane in a real session.
+- **A cold launch from a link or a widget's tap gets no launch arguments**, and a plain launch
+  opens the last real tab. First save safe arguments in the simulator's own defaults, which the
+  app reads like launch arguments: `xcrun simctl spawn <sim> defaults write
+  dev.abrahamgonzalez.rexduo autoOpen zz-test` (and `servers`, `sizing` and the like the same
+  way). Delete them, or the simulator, afterwards.
 - The widgets: `-glanceDemo <scenario>` writes a made-up snapshot, and `-glanceLive YES` with
   `-autoOpen <label>` writes the real one for that session only
   ([debug-args.md](debug-args.md)). Add the widget on a simulator's Home Screen (touch and hold,
-  Edit, Add Widget) or Lock Screen (touch and hold, Customize). A widget's tap starts the app
-  without launch arguments, like `openurl`: save safe arguments in the simulator's defaults first.
+  Edit, Add Widget) or Lock Screen (touch and hold, Customize).
 - `GlanceRenderTests` draws every family, state, color scheme and rendering mode into the test
   host's temporary folder (`glance-renders`), one picture each and a sheet per family.
-- `simctl openurl` starts an app that isn't running **without** launch arguments, and a plain
-  launch opens the last real tab. To test a cold launch from a link, first save the arguments
-  in the simulator's own defaults, which the app reads like launch arguments:
-  `xcrun simctl spawn <sim> defaults write dev.abrahamgonzalez.rexduo autoOpen zz-test` (and
-  `servers`, `sizing` and the like the same way). Delete them, or the simulator, afterwards.
 - The controls show in the simulator's Control Center (swipe down from the top right, "+",
   "Add a Control") and work there. The Lock Screen slots, the Action button and a locked phone
   need a device: try each control with the app not running, in the background, and with the

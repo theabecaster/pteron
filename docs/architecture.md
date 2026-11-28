@@ -3,7 +3,7 @@
 ## Layers
 
 App → Features → State → RexKit. Features also use DesignSystem. Nothing points back up.
-The app and its extension both use `Packages/RexGlance`, which uses nothing of ours.
+The app and its extensions use `Packages/RexGlance`, which uses nothing of ours.
 
 | Layer | Owns | Doesn't |
 |---|---|---|
@@ -16,46 +16,50 @@ The app and its extension both use `Packages/RexGlance`, which uses nothing of o
 | `PteronWatch`, `PteronWatchWidgets` (watch app and its extension) | the agents on the wrist: the snapshot the phone sent, the complications, and Enter or Interrupt for a waiting agent, sent to the phone after a confirmation ([glance.md](glance.md), The watch) | import RexKit, app code or the engine; connect to anything; send the phone anything but a confirmed action |
 | `PteronWidgets` (app extension) | the agents widget (Home Screen and Lock Screen), the controls for Control Center, the Lock Screen and the Action button, and `OpenLinkIntent`, which the app compiles too | import RexKit, app code or the engine; connect to anything; write the snapshot (it only reads it) |
 
-`Relay/` is a separate Rust crate (the push helper for macOS and Linux). It shares no code with
-the app; it speaks the same control protocol over Rex's Unix socket.
+`Relay/` is a separate Rust crate (Beacon, the push helper for macOS and Linux). It shares no
+code with the app; it speaks the same control protocol over Rex's Unix socket.
+
+Targets (`project.yml`): `Pteron` (the app; it embeds `PteronWidgets`, so every build and test
+of the app builds the extension, and `PteronWatch`, which embeds `PteronWatchWidgets`),
+`PteronWidgets`, `PteronTests` (which also compiles `PteronWidgets/Views` to draw them), and
+`PteronWatchTests` (in the scheme `PteronWatch`, on a watchOS simulator).
 
 ## Data flow
 
 1. `PteronApp` owns `Prefs` and `AppModel` as `@State` and injects both with `.environment`.
-2. `AppModel` builds a `ServerConnection` per configured server (Settings → Computers). Each owns one `RexControl`, a `KeymapStore` and its `ServerCapabilities` (what that server can do; docs/rex-protocol.md, API revisions). None connects until a scene shows (Launch, below).
+2. `AppModel` builds a `ServerConnection` per configured server (Settings → Computers). Each owns
+   one `RexControl`, a `KeymapStore` and its `ServerCapabilities` (what that server can do;
+   [rex-protocol.md](rex-protocol.md), API revisions). None connects until a scene shows
+   (Launch, below).
 3. On connect, `ServerConnection.bootstrap` calls `session.bootstrap`, attaches every session,
-   loads block metadata (program status, title, process), hosts and the keymap. The first
-   sync with a server process also reads the creator list.
+   loads block metadata (program status, title, process), hosts and the keymap. The first sync
+   with a server process also reads the creator list.
 4. Server events update `ServerConnection` (`ServerConnection+Events.swift`). For an event the
-   server had to drop, only what it would have changed is read again. Block events are coalesced (about 150 ms) and a status
-   stays on screen at least a second, except a new "blocked", which shows at once. Each block's
-   metadata sits in its own observable box, so one pane's change re-renders only its readers.
+   server had to drop, only what it would have changed is read again. Block events are coalesced
+   (about 150 ms) and a status stays on screen at least a second, except a new "blocked", which
+   shows at once. Each block's metadata sits in its own observable box, so one pane's change
+   re-renders only its readers.
 5. User actions call `ServerConnection` methods, then re-read the session's view. The server's
    `session_view_changed` is the truth for layout; nothing guesses a layout locally.
 6. Each visible pane is `PaneView` → `TerminalHost` (UIKit) → `TerminalStream` (RexKit).
-   Settings and theme are pushed into the host from `updateUIView`. Each `ServerConnection`
-   also owns an `EchoGate`, which its panes' streams feed with their writes' round trips and
-   their hosts follow (docs/terminal.md, Predicted echo).
+   Settings and theme are pushed into the host from `updateUIView`. Each `ServerConnection` also
+   owns an `EchoGate`, which its panes' streams feed with their writes' round trips and their
+   hosts follow ([terminal.md](terminal.md), Predicted echo).
 7. Reconnects, returning to the foreground and an event `seq` gap all trigger a full resync.
 
-Three things from outside put a tab on screen, and all end in `AppModel.openRequest`, which
+Phone-only view state (zoomed tabs, when agents started waiting) lives in `PhoneState` and never
+goes to the server, so the Mac's layout doesn't change because of the phone.
+
+Four things from outside put a tab on screen, and all end in `AppModel.openRequest`, which
 `RootView` shows:
 
-- a tapped push: `AppDelegate` → `AppModel.open(_ route:)` (docs/notifications.md);
+- a tapped push: `AppDelegate` → `AppModel.open(_ route:)` ([notifications.md](notifications.md));
 - a tapped toast: `AppModel.openPane`;
 - a link from a control: `OpenLinkIntent` (run in the app) opens the URL → `PteronApp`'s
-  `onOpenURL` → `AppModel.openLink` → `openWaiting()`,
-  with the rules in `OpenWaiting` ([glance.md](glance.md)). `rexduo://open` only brings the app
-  forward.
-
+  `onOpenURL` → `AppModel.openLink` → `openWaiting()`, with the rules in `OpenWaiting`
+  ([glance.md](glance.md)). `rexduo://open` only brings the app forward;
 - a link from a widget's row: `onOpenURL` → `AppModel.openLink` → `openPane(link:)`, with the
   rules in `OpenPaneLink`.
-
-Targets (`project.yml`): `Pteron` (the app; it embeds `PteronWidgets`, so every build and test
-of the app builds the extension, and `PteronWatch`, which embeds `PteronWatchWidgets`),
-`PteronWidgets`, `PteronTests` (which also compiles the widgets' views, `PteronWidgets/Views`,
-to draw them), and `PteronWatchTests` (the watch app's tests, in the scheme `PteronWatch`, on a
-watchOS simulator).
 
 ## Which tab a launch opens
 
@@ -66,8 +70,8 @@ run by `AppModel.autoSelect()`):
    still there.
 2. Else the top tab of its session, in the sidebar's order.
 3. Else the top tab of the first session with tabs on that machine.
-4. Else, or with nothing saved, as before: the first session with tabs on any machine, at the tab
-   it shows. With nothing at all, the empty state.
+4. Else, or with nothing saved, the first session with tabs on any machine, at the tab it shows.
+   With nothing at all, the empty state.
 
 - **From what is saved and synced.** No call of its own: the tab is picked from the machine's
   first sync, and selected without `session.focus_window`.
@@ -79,8 +83,8 @@ run by `AppModel.autoSelect()`):
 
 Rex keeps a session whose last pane closed: it stays listed with no tabs (`session.view` has no
 `windows` and no `active_window_id`) until someone kills it, whatever the server's `exit-empty`
-says (that one is about the server stopping). The app doesn't kill it either; nothing shows that
-Rex.app does. It moves the screen instead, by one rule (`CloseNext`, `State/CloseNext.swift`):
+says (that one is about the server stopping). The app doesn't kill it either, as Rex.app
+doesn't. It moves the screen instead, by one rule (`CloseNext`, `State/CloseNext.swift`):
 
 1. A pane of the closed tab is now in another tab of the session (Move Pane to Tab took the
    last one): that tab.
@@ -102,14 +106,13 @@ Rex.app does. It moves the screen instead, by one rule (`CloseNext`, `State/Clos
 - **A tab that may be moving.** Where the server moves tabs between sessions (revision 22), the
   tab on screen that leaves its session's view and is in no other stays there for 0.4 s first,
   longer if a `window_created` names it elsewhere, since another client's move shows the session
-  it leaves first (`LeavingTab`; docs/sidebar.md, Move to Session). Then the rule runs as above.
+  it leaves first (`LeavingTab`; [sidebar.md](sidebar.md), Move to Session). Then the rule runs.
 - **Moving is selecting.** The next tab is shown as a tap would (`select`, which sends
   `session.focus_window`); nothing is opened, resized or closed for it beyond what showing a tab
   does (fit mode takes its pane).
 - **History.** `AppModel.recentTabs` (`TabHistory`): the last 32 tabs viewed, newest first, each
-  once, saved in `Prefs.recentTabs` across launches; a test launch starts empty and saves nothing.
-  Rex.app keeps the same kind of list (Go to Recent Session: "Shows the session you were in
-  before this one").
+  once, saved in `Prefs.recentTabs`; a test launch starts empty and saves nothing. Rex.app keeps
+  the same kind of list (Go to Recent Session).
 
 ## Launch
 
@@ -118,15 +121,15 @@ A launch opens no connection until the app is on its way to the screen.
 - `AppModel.init` builds every `ServerConnection` and starts none.
 - `PteronApp` reads one thing, the scene phase, and `ScenePhases` says what each phase asks:
   `.inactive` → `AppModel.sceneVisible()`; `.active` → `sceneVisible()`, then the resync and the
-  helpers' "in front" as before; `.background` → the background steps.
-- `sceneVisible()` starts every server, once (`mayConnect`). After it, `rebuildServers()`
-  starts a new server at once; before it, a changed server list starts nothing.
-- A launch iOS makes in the background (prewarming, and later a message from a watch or a
-  notification action) has no scene, so it gets no visible phase: no server is started, no
-  helper hears that the phone is in front ([notifications.md](notifications.md), In front),
-  and no snapshot is written.
-- The app reads no other launch state. `UIApplication.applicationState` is not usable for
-  this: SwiftUI runs `App.init` before `UIApplicationMain`, where it reads as active, and
+  helpers' "in front"; `.background` → the background steps.
+- `sceneVisible()` starts every server, once (`mayConnect`). After it, `rebuildServers()` starts
+  a new server at once; before it, a changed server list starts nothing.
+- A launch iOS makes in the background (prewarming, a message from a watch, a notification
+  action) has no scene, so it gets no visible phase: no server is started, no helper hears that
+  the phone is in front ([notifications.md](notifications.md), In front), and no snapshot is
+  written.
+- The app reads no other launch state. `UIApplication.applicationState` is not usable for this:
+  SwiftUI runs `App.init` before `UIApplicationMain`, where it reads as active, and
   `didFinishLaunching` reports background for an ordinary launch too.
 - A Debug build logs one `SCENE_VISIBLE servers=<n>` line when the servers are started.
 
@@ -141,13 +144,13 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   landed is dropped. The extension only reads. A later writer (a watch, a notification
   extension) gets a file of its own.
 - **When.** `GlanceWatcher`, a zero-size view beside `WaitingWatcher`, reads only what is
-  already coalesced (`waitingAgentIDs`, each server's `agentKeys`, its link, the two themes)
-  and tells the writer that something changed. `WriteThrottle` turns that into writes and into
+  already coalesced (`waitingAgentIDs`, each server's `agentKeys`, its link, the two themes) and
+  tells the writer that something changed. `WriteThrottle` turns that into writes and into
   reloads of the widgets' timeline. Going to the background writes once more, inside a
   `BackgroundTask`.
 - **On to the watch.** The writer hands each written snapshot to `GlanceBridge` (owned by
-  `AppModel`), which sends it over WatchConnectivity when `WatchDelivery` says so. On the
-  watch, `WatchInbox` is the one writer of the watch's own copy. Nothing comes back.
+  `AppModel`), which sends it over WatchConnectivity when `WatchDelivery` says so. On the watch,
+  `WatchInbox` is the one writer of the watch's own copy. Nothing comes back.
 - **Off** in the test host and in every test launch (`GlanceWriter.Mode`), so made-up or
   throwaway state never replaces what the widgets know.
 
@@ -182,19 +185,18 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
     short visits add up to a turn.
   - *The budget:* at most 2 attempts per 100 s across hosts that are down, and 2 under way. A
     host's first attempt of an episode and a user's tap are outside it, and a welcome gives the
-    budget that host's attempts back (they were not to a host that is down). A host that is
-    refused only because 2 attempts are under way keeps no timer and logs nothing: the
-    governor tells it when one of them ends.
+    budget that host's attempts back (they were not to a host that is down). A host refused only
+    because 2 attempts are under way keeps no timer and logs nothing: the governor tells it when
+    one of them ends.
   - *The tunnel breaker:* its states and transitions are the table at the top of
     `ReconnectGovernor`. It opens when 2 hosts go silent within 30 s, each one connected until
     then or on its first two attempts, and no host is connected. One test host is tried and the
-    others are held; a test host that stays silent passes the turn to the next (the one that was
-    connected last first), so a computer that is off never keeps healthy ones held. A dormant
-    host is never held and takes no turn: it keeps its own attempt per 10 min, open breaker or
-    not, so one that comes back is found within about 10 min however many others are away;
-    dormant hosts that come due together go 500 ms apart and within the budget. Any welcome
-    or answer from any host closes it, and the held hosts go 500 ms apart, each when its floor
-    and the budget allow.
+    others are held; a test host that stays silent passes the turn to the next (the one connected
+    last first), so a computer that is off never keeps healthy ones held. A dormant host is never
+    held and takes no turn: it keeps its own attempt per 10 min, open breaker or not, so one that
+    comes back is found within about 10 min however many others are away; dormant hosts that
+    come due together go 500 ms apart and within the budget. Any welcome or answer from any host
+    closes it, and the held hosts go 500 ms apart, each when its floor and the budget allow.
   - *Triggers:* a tap is Try Again, a pull to refresh, or moving to another server (a tab or a
     pane of the same server is not one). It is one attempt now, past the floor, the budget and
     the breaker, at most once per 10 s per host and with fewer than 2 attempts under way; a pull
@@ -207,32 +209,29 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
     host forward subject to the floor, and leaves a dormant host alone unless it is selected.
     With no path nothing is tried and a failure counts toward nothing.
   - *An attempt under way:* no request cancels it or opens a second socket beside it, and the
-    state is checked where the socket is opened (`openSocket`), so an attempt that was let
-    through a turn earlier can't replace a socket that has since got its welcome or open one
-    after a stop. A change of route (`RouteWatch`) alone gives the attempt a new socket, once
-    (`moveAttempt`): the same attempt, with the old socket dropped, a full deadline for the new
-    one and the floor counted from it. A launch opens one socket per server (`ControlKickTests`).
+    state is checked where the socket is opened (`openSocket`), so an attempt let through a turn
+    earlier can't replace a socket that has since got its welcome or open one after a stop. A
+    change of route (`RouteWatch`) alone gives the attempt a new socket, once (`moveAttempt`):
+    the same attempt, with the old socket dropped, a full deadline for the new one and the floor
+    counted from it. A launch opens one socket per server (`ControlKickTests`).
   - *Liveness:* a ping when nothing came in for 30 s, and at once when a request got nothing
     back for 5 s (10 s on cellular); no pong in 10 s (20 s) is a dead connection. The connect
     deadline is 10 s (15 s), the wake pong 2.5 s (5 s), and the hold on a drop after a return
-    (`ForegroundWake.grace`) 5 s (8 s). There is one watchdog per connection,
-    not a deadline per call: while any call waits (typed input is one), the silence is counted
-    from the later of the last frame in and the oldest waiting call, and one wait is set for
-    what is left of it. Frames that keep arriving keep it quiet however long a call takes. It
-    neither waits nor fires in the background, and a wait set before a drop does nothing to the
-    next connection (`ControlWatchdogTests`). A data socket's handshake has the connect
-    deadline too (docs/terminal.md, Reconnect).
+    (`ForegroundWake.grace`) 5 s (8 s). One watchdog per connection, not a deadline per call
+    (Slow calls and the watchdog, below). It neither waits nor fires in the background, and a
+    wait set before a drop does nothing to the next connection (`ControlWatchdogTests`). A data
+    socket's handshake has the connect deadline too ([terminal.md](terminal.md), Reconnect).
   - *Background:* `enteredBackground()` cancels every wait and the pings and gives up an attempt
     that is under way; `wake()` ends it.
 - **One gate per host, for every socket.** The control connection is the only thing that asks a
-  host that is down. The gate is in the code that opens a socket, so no caller can go around
-  it: `RexControl.openDataSocket` (terminal streams and files) and `TunnelSession.open` (port
+  host that is down. The gate is in the code that opens a socket, so no caller can go around it:
+  `RexControl.openDataSocket` (terminal streams and files) and `TunnelSession.open` (port
   tunnels; the session comes from `RexControl.makeTunnelSession`). Both refuse without the
   control connection's welcome. A terminal stream and a tunnel are also refused in the
   background and, after it, until the control connection has its verdict (`holdsData`): the
-  pong to `wake()`'s ping, or a fresh welcome. A stream waits (`TerminalStream.mayOpen`) with
-  its RESUME token kept, and its own ping at the return has no deadline of its own: it follows
-  that verdict. A file's socket is not held in the background: it follows the answer to its
+  pong to `wake()`'s ping, or a fresh welcome. A stream waits (`TerminalStream.mayOpen`) with its
+  RESUME token kept, and its own ping at the return has no deadline of its own: it follows that
+  verdict. A file's socket is not held in the background: it follows the answer to its
   `…_begin` call, and a send the user started goes on when they leave the app. Calls fail unsent
   before the socket, so the Ports list's reads and a folder listing open nothing either.
 - **A dead control socket takes the host's other sockets with it** (`RexControl.hostDied`): when
@@ -240,100 +239,106 @@ The agents widget can't reach Rex, so the app tells it what it knows through one
   with no close frame. A stream keeps its token and raises its fence as on any drop, and resumes
   with the welcome. A close the server answered with leaves them alone.
 - The watch's and a notification's one-shot channel makes one attempt for one user action and
-  never retries; for a server that is dormant, or while the breaker is open, it opens nothing
-  and answers as a connection that failed (`UnreachableActionChannel`).
-  `DownHostSocketCountTests` counts every path, one by one, for a host that is down for an hour
-  in the foreground and an hour in the background.
+  never retries; for a server that is dormant, or while the breaker is open, it opens nothing and
+  answers as a connection that failed (`UnreachableActionChannel`). `DownHostSocketCountTests`
+  counts every path for a host that is down for an hour in the foreground and an hour in the
+  background.
 - A dormant or held server looks like any offline server: the same screen, the same sidebar
-  line, Try Again. Nothing new is shown. A row whose tap asks a down computer to try again (a
-  tab or a session of a computer other than the one on screen) has the VoiceOver hint "Tries
-  again." (`OfflineCopy.tapHint`).
+  line, Try Again. A row whose tap asks a down computer to try again (a tab or a session of a
+  computer other than the one on screen) has the VoiceOver hint "Tries again."
+  (`OfflineCopy.tapHint`).
 - **When every computer is silent together** the offline screen of a silent server says "Can't
   reach your computers" and "If Tailscale shows a warning, turn it off and on."
-  (`ConnectionProblem.Kind.tunnelDown`), in place of that server's own problem. The rule is
-  `TunnelSuspicion` (RexKit, pure): the breaker is open, the phone has a path, at least two
-  servers are silent, and none is up or has answered; then ten seconds of that with the app in
-  front. `AppModel.checkTunnel` is the one place that reads the governor for it (`breakerOpen`,
-  `tunnelHosts`): it asks when the breaker, a connection or the path changes and tells the
-  servers (`tunnelNoticeChanged`); `ConnectionProblem.under` words one server. A server that
-  refused, answered over HTTP, failed TLS or turned the phone away keeps its own problem, as
-  does one whose address is no Tailscale address, a phone with no Tailscale address (that
-  screen already says to turn Tailscale on), and one server that is off. It ends in the turn
-  the breaker closes (a welcome, an answer) or the app leaves the front, and `ProblemGate` has
-  kept each server's own problem meanwhile. Once every server has gone dormant the breaker is
-  closed and each says its own problem again: the tunnel's message
-  is only for the time the app is still finding out. It is the same screen: no alert, toast,
-  sound or button. The sidebar's line stays the server's own.
+  (`ConnectionProblem.Kind.tunnelDown`), in place of that server's own problem.
+  - The rule is `TunnelSuspicion` (RexKit, pure): the breaker is open, the phone has a path, at
+    least two servers are silent, and none is up or has answered; then ten seconds of that with
+    the app in front.
+  - `AppModel.checkTunnel` is the one place that reads the governor for it (`breakerOpen`,
+    `tunnelHosts`): it asks when the breaker, a connection or the path changes and tells the
+    servers (`tunnelNoticeChanged`); `ConnectionProblem.under` words one server.
+  - A server keeps its own problem when it refused, answered over HTTP, failed TLS or turned the
+    phone away, when its address is no Tailscale address, when the phone has no Tailscale
+    address (that screen already says to turn Tailscale on), and when only one server is off.
+  - It ends in the turn the breaker closes (a welcome, an answer) or the app leaves the front;
+    `ProblemGate` has kept each server's own problem meanwhile. Once every server is dormant the
+    breaker is closed and each says its own problem again: the tunnel's message is only for the
+    time the app is still finding out.
+  - Same screen: no alert, toast, sound or button. The sidebar's line stays the server's own.
 - `TunnelProbe`: as the breaker opens, one TCP connection to Tailscale's own service on the
   phone (100.100.100.100:53), with the app in front and a tailnet address on the phone. Its
   result is one line in the connection log (`probe`). Nothing reads it: no screen and no retry
   depends on it.
 - A drop from online shows nothing for 5 s (`ServerConnection.phaseGrace`); most end sooner.
 - `ServerConnection` turns failures into `ConnectionProblem`s (`State/ConnectionProblem.swift`):
-  no internet, off the private network, host not on the tailnet, not answering (asleep, refused, or
-  not Rex), not allowed, insecure, bad address, unknown. `NetworkWatch` (`NWPathMonitor` off the main
-  thread) says whether there's a path and whether the phone has a Tailscale address; a path change
-  retries every down server.
-- Offline holds still: retries never show as "connecting", only a real connection leaves `.offline`,
-  and `ProblemGate` changes the message only for a decisive kind or the same new kind twice.
-  `recovering` keeps the screen up, saying the signal is back, until the sessions have reloaded.
+  no internet, off the private network, host not on the tailnet, not answering (asleep, refused,
+  or not Rex), not allowed, insecure, bad address, unknown. `NetworkWatch` (`NWPathMonitor` off
+  the main thread) says whether there's a path and whether the phone has a Tailscale address; a
+  path change retries every down server.
+- Offline holds still: retries never show as "connecting", only a real connection leaves
+  `.offline`, and `ProblemGate` changes the message only for a decisive kind or the same new kind
+  twice. `recovering` keeps the screen up, saying the signal is back, until the sessions have
+  reloaded.
 - Waking up isn't a problem (`State/ForegroundWake.swift`). iOS suspends the app and its sockets
   die, so a return to the foreground usually finds the connection down for a moment. A drop
-  while in the background, or within 5 s after the return (8 s on cellular), is held: `phase` stays `.online`, the
-  tab keeps its last frame with no dim, input queues as usual, and `ServerConnection.waking` puts
-  a small Glide beside the tab's title, breathing, if it lasts over a second (`WakingMark`, Core
-  Animation, still with Reduce Motion; the sidebar's dot turns grey and still). On the return
-  `RexControl.wake()` pings the connection: a failed ping, no pong in 2.5 s, or a drop in those
-  seconds reconnects at once, not after the backoff. A reconnect inside the grace shows nothing
-  more. No network, a decisive kind or a server that refused ends the hold at once, and a hold
-  that runs out shows the offline screen as before. A server already offline when the app left
-  keeps its screen.
+  while in the background, or within 5 s after the return (8 s on cellular), is held: `phase`
+  stays `.online`, the tab keeps its last frame with no dim, input queues as usual, and
+  `ServerConnection.waking` puts a small breathing Glide beside the tab's title if it lasts over
+  a second (`WakingMark`, Core Animation, still with Reduce Motion; the sidebar's dot turns grey
+  and still). On the return `RexControl.wake()` pings the connection: a failed ping, no pong in
+  2.5 s, or a drop in those seconds reconnects at once, not after the backoff. A reconnect inside
+  the grace shows nothing more. No network, a decisive kind or a server that refused ends the
+  hold at once, and a hold that runs out shows the offline screen. A server already offline when
+  the app left keeps its screen.
 - `Features/Offline`: `OfflineScreen` takes over the tab area only when no server is up (one down
-  server among several is a line in the sidebar). Over a tab whose server dropped, it dims the stale
-  tab and blocks touches. `SignalStatic` is Core Animation only (one noise texture, discrete
-  `contentsRect` jumps, looping keyframes), off while not in a window, still with Reduce Motion.
-- A `*.ts.net` server out of reach while this iPhone has no Tailscale address says "Tailscale isn't
-  connected on this iPhone." and offers Get Tailscale (`TailscaleApp`) instead of Open Settings.
-  At a `*.ts.net` address, can't-find says Tailscale here is signed in to another account and a
-  refusal says Rex lets in only devices on its Tailscale account. Every other case is worded
-  without naming a product, and names the computer, never "the Mac".
+  server among several is a line in the sidebar). Over a tab whose server dropped, it dims the
+  stale tab and blocks touches. `SignalStatic` is Core Animation only (one noise texture,
+  discrete `contentsRect` jumps, looping keyframes), off while not in a window, still with Reduce
+  Motion.
+- A `*.ts.net` server out of reach while this iPhone has no Tailscale address says "Tailscale
+  isn't connected on this iPhone." and offers Get Tailscale (`TailscaleApp`) instead of Open
+  Settings. At a `*.ts.net` address, can't-find says Tailscale here is signed in to another
+  account and a refusal says Rex lets in only devices on its Tailscale account. Every other case
+  is worded without naming a product, and names the computer, never "the Mac".
 
 ### Slow calls and the watchdog
 
 No control call has a deadline in the app, and the watchdog is not one. When a call is 5 s old
-(10 s on cellular) and nothing at all has come in since, the app sends one WebSocket ping. Only
-a ping with no pong in 10 s (20 s) drops the host. A pong ends the watchdog until the next
-request goes out, so a slow call on a host that is there costs one ping and nothing else, and
-its answer is taken whenever it comes. After that the 30 s keepalive is the only thing that
-asks. The most the watchdog can send is one ping for each 5 s (10 s) of silence, which needs
-requests that keep going out with none answered (`ControlWatchdogTests`).
+(10 s on cellular) and nothing at all has come in since, the app sends one WebSocket ping. Only a
+ping with no pong in 10 s (20 s) drops the host. While any call waits (typed input is one), the
+silence is counted from the later of the last frame in and the oldest waiting call, with one wait
+set for what is left of it; frames that keep arriving keep it quiet however long a call takes. A
+pong ends the watchdog until the next request goes out, so a slow call on a host that is there
+costs one ping, and its answer is taken whenever it comes. After that the 30 s keepalive is the
+only thing that asks. The most the watchdog can send is one ping per 5 s (10 s) of silence, which
+needs requests that keep going out with none answered (`ControlWatchdogTests`).
 
 This rests on the server answering a ping while it works on a call. Rex answers a ping on the
 control connection at once, also during an upload ([rex-protocol.md](rex-protocol.md), Files),
-and it does not hold one call behind another (Ordered calls), so its reader is not kept by a
-call. A pong during a call that takes more than 5 s has not been measured on a server: if a
-server did hold its pong for 10 s (20 s), the host would be dropped 15 s (30 s) into that call
-and connected again, and the call would fail as sent with no answer.
+and does not hold one call behind another (Ordered calls). A pong during a call longer than 5 s
+has not been measured on a server: if a server held its pong for 10 s (20 s), the host would be
+dropped 15 s (30 s) into that call and connected again, and the call would fail as sent with no
+answer.
 
-No answer time below is measured; "can be slow" is what the call's work suggests.
+Calls that can be slow, from the work they do (none is measured), all get the same treatment: one
+ping at 5 s if nothing else comes in.
 
-| Call | Answer time | What the watchdog does |
-|---|---|---|
-| `write`, `resize`, `client.key`, `client.action` | short | nothing while answers come; one ping when a host is silent for 5 s |
-| `format` (a screen, All Output) | can be slow: grows with the scrollback; its reply is at most 64 KiB | one ping at 5 s if nothing else comes in |
-| `blob_read` (the rest of a screen or of All Output) | one chunk of 64 to 256 KiB each, sized from the last one's rate (`BlobChunks`, `ChunkSizer`) | the same. A reply counts as heard only when it is in whole, and a pong waits behind it, so a chunk must arrive inside 15 s (30 s): 64 KiB takes 8 s at 64 kbit/s, the slowest link the policy assumes (`ReconnectPolicy.slowestRate`) |
-| `ports`, `process`, `program_status`, `title`, `size` | can be slow: the host reads its processes | the same |
-| `list_dir` | can be slow: a large or remote folder | the same |
-| `upload_begin`, `download_begin`, `data.connect` | short: they answer a ticket | the same; the bytes go on a data socket, which has its own handshake deadline ([terminal.md](terminal.md), Reconnect) |
-| `session.new_block` (a dial tunnel) | can be slow: the host connects first | the same |
-| `session.create`, `new_window`, `new_split` | can be slow: a shell starts | the same |
-| `session.bootstrap`, `attach`, `view`, `list`, `hosts.list`, `block_creator.list`, `client.keymap` | can be slow on a busy host | the same |
+- `format` (a screen, All Output) grows with the scrollback; its reply is at most 64 KiB.
+- `blob_read` (the rest of a screen or of All Output) returns one chunk of 64 to 256 KiB, sized
+  from the last one's rate (`BlobChunks`, `ChunkSizer`). A reply counts as heard only when it is
+  in whole, and a pong waits behind it, so a chunk must arrive inside 15 s (30 s): 64 KiB takes
+  8 s at 64 kbit/s, the slowest link the policy assumes (`ReconnectPolicy.slowestRate`).
+- `ports`, `process`, `program_status`, `title`, `size` (the host reads its processes);
+  `list_dir` (a large or remote folder); `session.new_block` for a dial tunnel (the host connects
+  first); `session.create`, `new_window`, `new_split` (a shell starts); `session.bootstrap`,
+  `attach`, `view`, `list`, `hosts.list`, `block_creator.list`, `client.keymap` (a busy host).
+- Short: `write`, `resize`, `client.key`, `client.action`, and `upload_begin`, `download_begin`,
+  `data.connect` (they answer a ticket; the bytes go on a data socket with its own handshake
+  deadline, [terminal.md](terminal.md), Reconnect).
 
 An upload sends no control call per message: it paces itself with `RexControl.paceProbe()`, a
 ping of its own that only measures. No pong within the pong deadline is a slow sample, which
-halves the rate; it never drops the host. A host that stops answering during an upload is
-found as any other is, by the watchdog and the keepalive. A terminal's snapshot comes on its
-data socket, not as a call.
+halves the rate; it never drops the host. A host that stops answering during an upload is found
+by the watchdog and the keepalive. A terminal's snapshot comes on its data socket, not as a call.
 
 ### The connection log
 
@@ -342,30 +347,29 @@ or crashed. Nothing shows it; `ConnectionLog.export` gives it as text for a diag
 user shares.
 
 - **Where:** `Application Support/Diagnostics/connections.clog` (`State/ConnectionDiagnostics.swift`),
-  left out of backups. Application Support and not Caches, which the system may empty. The types
-  are in RexKit: `ConnectionEvent` (one line), `ConnectionJournal` (the rings and the file's
-  format), `ConnectionLog` (the queue and the file), `ConnectionReporter` (a `RexControl`'s states
-  as events). A pane's lines come from its host (`TerminalHost.note`), which hears the owner
-  events of its block from its computer's connection (`OwnerChanges`).
-- **What it holds:** per server the newest 200 events of its control connection: `connecting`
-  (with what asked for the attempt: first, backoff, user, network, foreground, peer),
-  `connected` (with the milliseconds the attempt took), `closed` (a kind such as timeout, lost,
-  reset, refused, unreachable, dns, tls, http, auth, closed, policy, revision, plus the error
-  code, the HTTP status or close code, and the POSIX or TLS code under it), `retry` (the wait
-  before the next attempt), `dormant` and `stopped`. Also what a welcome said of the client
-  (`client continued` or `client new`), and three lines of a pane's stream on the way back:
-  `stream refused` (a RESUME or a HELLO, with the REJECT's reason byte), `ticket refused`
-  (with `conflict` or anything else, and how many times in a row) and `resume skipped` (the
-  stream's client had left the server). And, for a pane on screen, each change of
-  its owner (`pane owner reason=<create|take|request|disown|lost|disconnect|restore|unknown>
-  previous=<none|phone|other> owner=<none|phone|other>`: the server's reason, and whether each
-  client is nobody, this phone or another client) and what fit mode did about another
-  client's size (`pane fit lost how=<resize|unapplied|owner|refused|guard>` when the chip
-  shows, `pane fit taken back`, `pane fit given back`; [terminal.md](terminal.md), Fit and
-  mirror). So a diagnostics file says why a pane changed size. And 200 events of the app: each launch with its build
-  number, each scene phase, the tunnel breaker opening and closing, the probe of Tailscale's own service that follows an opening, and each change of the network path as four yes-or-no facts
-  (satisfied, expensive, constrained, a Tailscale address on an interface). At most 12 server
-  rings; one server more pushes out the ring that was quiet longest.
+  left out of backups. Application Support, not Caches, which the system may empty. The types are
+  in RexKit: `ConnectionEvent` (one line), `ConnectionJournal` (the rings and the file's format),
+  `ConnectionLog` (the queue and the file), `ConnectionReporter` (a `RexControl`'s states as
+  events). A pane's lines come from its host (`TerminalHost.note`), which hears the owner events
+  of its block from its computer's connection (`OwnerChanges`).
+- **What it holds:** per server, the newest 200 events (`ConnectionEvent` lists every kind):
+  - the control connection: `connecting` (with what asked: first, backoff, user, network,
+    foreground, peer), `connected` (with the attempt's milliseconds), `closed` (a kind such as
+    timeout, refused, dns, tls, http, auth, revision, with the error, HTTP or close code and the
+    POSIX or TLS code under it), `retry`, `dormant`, `stopped`, and what a welcome said
+    (`client continued` or `client new`);
+  - a pane's stream on the way back: `stream refused` (with the REJECT's reason byte),
+    `ticket refused` and `resume skipped`;
+  - for a pane on screen, each owner change (`pane owner reason=… previous=… owner=…`, each
+    client none, phone or other) and what fit mode did about another client's size
+    (`pane fit lost how=…`, `pane fit taken back`, `pane fit given back`;
+    [terminal.md](terminal.md), Fit and mirror), so a diagnostics file says why a pane changed
+    size.
+
+  Plus 200 events of the app: each launch with its build number, each scene phase, the breaker
+  opening and closing, the `TunnelProbe` result, and each network path change as four yes-or-no
+  facts (satisfied, expensive, constrained, a Tailscale address). At most 12 server rings; one
+  more pushes out the ring quiet longest.
 - **The privacy rule:** an event is numbers only (`ConnectionEvent` has no text field). No host
   name, tailnet name, address, URL, computer label, session or pane name, terminal content or
   token can be in the file or in the exported text. A server is a hash of its id (a random UUID),
@@ -373,12 +377,12 @@ user shares.
   Settings' order; a failure keeps its codes and never its message or the server's close reason.
   `ConnectionLogTests.testNoNameOrAddressReachesTheFileOrTheExport` holds the rule. A new kind of
   event keeps it: add a number, never a string.
-- **Cost:** only a change of connection state, of the network path, of the scene's phase or
-  of a pane's owner records; nothing per frame, per key or on the terminal's feed path. `record` reads the time and
-  hands the event to a serial utility queue (under a microsecond on the caller). The file is
-  written on that queue at most once per 0.5 s however many events came, and at once when the
-  app goes to the background. A write appends 32 bytes per event; every 400 appended events the
-  file is written again from the rings, atomically, so it stays under 96 KB.
+- **Cost:** only a change of connection state, of the network path, of the scene's phase or of a
+  pane's owner records; nothing per frame, per key or on the terminal's feed path. `record`
+  reads the time and hands the event to a serial utility queue (under a microsecond on the
+  caller). The file is written on that queue at most once per 0.5 s, and at once when the app
+  goes to the background. A write appends 32 bytes per event; every 400 appended events the file
+  is rewritten from the rings, atomically, so it stays under 96 KB.
 - **Damage:** every event has a check byte. A file that is not the format or holds a damaged
   event is dropped whole and started again; a file that ends inside an event (the app died in a
   write) keeps the whole events before it. A file that is there and can't be read (the phone was
@@ -393,107 +397,102 @@ badge, no prompt, nothing made or sent until the tap.
 - **What a tap does:** `ConnectionDiagnostics.report` builds one text: the connection log's
   export, then the crash and hang reports, newest first. `writeShareFile` writes it to a folder
   of its own in the temporary directory, and the system's share sheet opens with that file. The
-  user picks where it goes. The file is removed when the sheet closes (also when the share
-  sheet ends by itself), when About is left while it is being written, before the next one is
-  written, and at the next launch if the app was killed meanwhile. The reports are read and
-  the file written off the main actor. A second tap while one is being written makes no
-  second file.
-- **Crash and hang reports:** `DiagnosticReportsSubscriber` takes MetricKit's diagnostic
-  payloads from launch, and `DiagnosticReports` keeps the newest 20 as files in
+  file is removed when the sheet closes (also when it ends by itself), when About is left while
+  it is being written, before the next one is written, and at the next launch if the app was
+  killed meanwhile. The reports are read and the file written off the main actor. A second tap
+  while one is being written makes no second file.
+- **Crash and hang reports:** `DiagnosticReportsSubscriber` takes MetricKit's diagnostic payloads
+  from launch, and `DiagnosticReports` keeps the newest 20 as files in
   `Application Support/Diagnostics/Reports`, left out of backups; a report over 512 KB is not
-  kept. The system delivers them at most once a day, on its own queue, usually at the launch
-  after the crash. The app takes no daily metrics and runs nothing between deliveries: no
-  timer and no work per frame.
-- **The privacy rule holds for the whole file.** The log has no text in it (above). A report
-  is the system's JSON cut down to a fixed list of fields before it is stored
-  (`DiagnosticReports.clean`, the lists `groups`, `numbers` and `texts`): the kinds of
-  diagnostic, the call stacks as binary names, UUIDs and offsets, the exception's type, code
-  and signal, the hang's or launch's duration, the app's version and build, the device model,
-  the system's version and the architecture, and the report's two times. Everything else is
-  dropped, the system's free text among it (a termination reason, an exception's message, the
-  memory region's description), with the bundle id, the region format and the process id. A
-  binary's path is cut to its name, and a kept text with anything of a path, an address or a
-  link in it is dropped. The app adds its version and nothing else
-  (`DiagnosticReportsTests`).
+  kept. The system delivers them at most once a day, usually at the launch after the crash. The
+  app takes no daily metrics and runs nothing between deliveries.
+- **The privacy rule holds for the whole file.** A report is the system's JSON cut down to a
+  fixed list of fields before it is stored (`DiagnosticReports.clean`, the lists `groups`,
+  `numbers` and `texts`): the kinds of diagnostic, the call stacks as binary names, UUIDs and
+  offsets, the exception's type, code and signal, the hang's or launch's duration, the app's
+  version and build, the device model, the system's version and the architecture, and the
+  report's two times. Everything else is dropped, the system's free text among it (a termination
+  reason, an exception's message, the memory region's description), with the bundle id, the
+  region format and the process id. A binary's path is cut to its name, and a kept text with
+  anything of a path, an address or a link in it is dropped. The app adds its version and
+  nothing else (`DiagnosticReportsTests`).
 
 ### What a launch and a sync ask of the tunnel
 
-On Wi-Fi a launch and a sync are as they always were, except for which computer starts first.
-The caps below apply only on an expensive path (cellular or a hotspot), read from the same word
-the cellular deadlines go by (`RexControl.onExpensivePath`).
+Everything here but the first-read rule applies only on an expensive path (cellular or a
+hotspot), read from the same word the cellular deadlines go by (`RexControl.onExpensivePath`).
 
 - **A cellular launch starts one computer first** (`StartStagger`, `AppModel.startInTurns`): the
-  one of the tab the launch opens (the tab viewed last), in the same turn as before, with no
-  wait ahead of it. The others start when it has settled: its first sync has the sessions and
-  tabs in, or its connection failed, or it went dormant (`AppModel.leadReported`). A second is
-  the longest they wait. They then start 250 to 500 ms apart. The path is asked once, when the
-  scene shows (`launchPathExpensive`): on Wi-Fi, and when the path has not been reported by
-  then, every computer starts at once, as it always did. Nobody waits when there is no tab to
-  open, after a return from the background or when the list changes; nothing starts in the
-  background. It is one scheduled wait.
+  one of the tab the launch opens (the tab viewed last), at once. The others start when it has
+  settled: its first sync has the sessions and tabs in, or its connection failed, or it went
+  dormant (`AppModel.leadReported`), and at the latest a second after it, then 250 to 500 ms
+  apart. The path is asked once, when the scene shows (`launchPathExpensive`): on Wi-Fi, or when
+  the path has not been reported by then, every computer starts at once. Nobody waits when there
+  is no tab to open, after a return from the background or when the list changes; nothing starts
+  in the background. It is one scheduled wait.
 - **Whatever the user asks of a computer, it does not wait its turn** (`AppModel.startNow`,
   `startAllWaiting`): opening it, a tapped notification, widget row or `rexduo:` pane link, an
-  action from the watch or on a notification, opening one of its panes, Try Again, Reconnect
-  and a new session start that computer in the same turn; the link to whoever waits, the
-  palette and a pull to refresh start every computer.
+  action from the watch or on a notification, opening one of its panes, Try Again, Reconnect and
+  a new session start that computer in the same turn; the link to whoever waits, the palette and
+  a pull to refresh start every computer.
 - **The session on screen is read first**, on every path (`ServerConnection.shownFirst`).
 - **On cellular a sync's reads go four at a time** (`CallGate`, `ServerConnection.syncCalls`,
   `ReconnectPolicy.syncCalls`): one `session.attach` for each session, then `program_status`,
-  `title` and `process` for each pane, the creators' list, and each pane's `ports`. A pane's
-  three answers are applied when the third is in. Whether a batch of reads is gated is asked
-  once where it starts (`gatesSync`), so a change of path in the middle leaves it as it began,
-  and no read is left waiting. A read whose turn comes after its connection is gone is not sent
-  on the next one. What the user does never waits at the gate.
+  `title` and `process` for each pane, the creators' list, and each pane's `ports`. A pane's three
+  answers are applied when the third is in. Whether a batch of reads is gated is asked once where
+  it starts (`gatesSync`), so a change of path in the middle leaves it as it began, and no read is
+  left waiting. A read whose turn comes after its connection is gone is not sent on the next one.
+  What the user does never waits at the gate.
 - **On Wi-Fi nothing goes through the gate**: every attach in one turn, then every pane's reads
   in one turn, and the ports' reads at their own width of four (`portReadWidth`).
 - **On cellular the unseen panes of a host get their fresh snapshots one at a time**
   (`SnapshotTurns`, `TerminalStream.fullStart`): the fresh start of a pane that streams unseen
   (`TerminalStream.isOnScreen` false) takes a turn and starts when the one before has its
-  snapshot. A pane on screen never takes a turn and never waits: it starts at once, whoever
-  holds the turn, and a pane that comes on screen while it waits starts then. A RESUME takes
-  no turn. The turn is given back when the snapshot ends or fails, when the start fails, on
-  `stop()`, `park()` and `restart()`, when the socket drops, when the host dies and in the
-  background; leaving cellular ends every turn; and a turn ends by itself after the cellular
-  connect deadline (15 s), with the stream left to go on beside the next
-  (`StreamSnapshotTurnTests`). On Wi-Fi nobody takes a turn.
+  snapshot. A pane on screen never takes a turn and never waits, and a pane that comes on screen
+  while it waits starts then. A RESUME takes no turn. The turn is given back when the snapshot
+  ends or fails, when the start fails, on `stop()`, `park()` and `restart()`, when the socket
+  drops, when the host dies and in the background; leaving cellular ends every turn; and a turn
+  ends by itself after the cellular connect deadline (15 s), with the stream left to go on beside
+  the next (`StreamSnapshotTurnTests`).
 - **What cellular pays for the gate:** a sync of S sessions and P panes takes about
-  (S + 3 P) / 4 round trips for its reads where it took two, and the app shows its tabs when
-  every session is read (`synced`), so on cellular the tabs come about S / 4 round trips
-  later. Showing the tab on screen as soon as its own session is read would take a second
-  state beside `synced` ("this session is in") and every reader of `synced` checked against
-  it; a sync replaces the views whole and does not merge, so a tab shown early could be taken
-  away again by the same sync. Not built.
+  (S + 3 P) / 4 round trips for its reads instead of two, and the tabs show when every session
+  is read (`synced`), so about S / 4 round trips later. Showing the tab on screen once its own
+  session is read is not built: it needs a second state beside `synced` checked by every reader,
+  and a sync replaces the views whole, so a tab shown early could be taken away by the same sync.
 
 ## First run
 
 `Features/Onboarding` is a short setup guide for an install with no computer yet.
 
-- Who sees it: `AppModel.init` decides once (`FirstRun.start`): no server and
-  `Prefs.onboardingDone` false. An update that finds servers sets the flag in `Prefs.init`, before
-  the first frame, so existing users never see it. Test launches (`-servers`, `-autoOpen`,
-  `-boardDemo`, `-simulateOffline`) and the test host never do. An existing user pays one saved flag.
-- Where: `OnboardingCover`, one modifier in `RootView`, lays it over the root while
+- **Who sees it:** `AppModel.init` decides once (`FirstRun.start`): no server and
+  `Prefs.onboardingDone` false. An update that finds servers sets the flag in `Prefs.init`,
+  before the first frame, so existing users never see it. Test launches (`-servers`,
+  `-autoOpen`, `-boardDemo`, `-simulateOffline`) and the test host never do.
+- **Where:** `OnboardingCover`, one modifier in `RootView`, lays it over the root while
   `AppModel.guide` is set, so the launch peel opens onto it. Otherwise nothing of it exists.
-- Steps (`OnboardingModel`): the welcome (Glide over `SignalStatic`, Get Started, I Have a Pairing
-  Code); two cards (what the app is, answering agents), paged with a spring, each with one motion
-  the first time it shows; the checklist (`ChecklistCopy`): Rex on the computer (Get Rex, Rex's
-  installation page; nothing ticks it), Tailscale on this iPhone, Tailscale turned on in Rex
-  (Mac or Linux), the pairing code, then Scan Code or Enter Address. VoiceOver reads each
-  step as "Step n of 4, title", with done or not done only for the Tailscale step. Back, and Skip
-  or Not Now, are toolbar items of the guide's own navigation stack (`BarLabel`): a plain
-  navigation bar on iPhones, the system's vertical bar on the Duo, where they carry symbols; the
-  root's bar is hidden while the guide shows, and each step's main button stays at the bottom of
-  the screen, in reach. Steps cross-fade; Reduce Motion keeps only the fades. Each screen lays out like the
-  offline screen (`OfflineLayout`): two pages on the unfolded Duo, nothing on the crease.
-- I Have a Pairing Code opens the scanner only when this iPhone is on a tailnet. Off it, it opens
-  the checklist with the Tailscale step marked as the one to do and a header that says why
+- **Steps** (`OnboardingModel`): the welcome (Glide over `SignalStatic`, Get Started, I Have a
+  Pairing Code); two cards (what the app is, answering agents), paged with a spring, each with
+  one motion the first time it shows; the checklist (`ChecklistCopy`): Rex on the computer (Get
+  Rex, Rex's installation page; nothing ticks it), Tailscale on this iPhone, Tailscale turned on
+  in Rex (Mac or Linux), the pairing code, then Scan Code or Enter Address.
+  - VoiceOver reads each step as "Step n of 4, title", with done or not done only for the
+    Tailscale step.
+  - Back, and Skip or Not Now, are toolbar items of the guide's own navigation stack
+    (`BarLabel`): a plain navigation bar on iPhones, the system's vertical bar on the Duo, where
+    they carry symbols. The root's bar is hidden while the guide shows, and each step's main
+    button stays at the bottom of the screen, in reach.
+  - Steps cross-fade; Reduce Motion keeps only the fades. Each screen lays out like the offline
+    screen (`OfflineLayout`): two pages on the unfolded Duo, nothing on the crease.
+- **I Have a Pairing Code** opens the scanner only when this iPhone is on a tailnet. Off it, it
+  opens the checklist with the Tailscale step marked as the one to do and a header that says why
   (`scanWhenConnected`); when `NetworkWatch` reports the tailnet up and nothing covers the
-  checklist (a sheet, the App Store page, the app in the background), the scanner opens by
-  itself after a beat to see the tick, once. Back, Scan Code, Enter Address and Not Now drop it.
-- The Tailscale tick reads `NetworkWatch`, with no polling of its own (`PrivateNetwork`: IPv4
-  100.64.0.0/10 only on a `utun` tunnel, since a cellular network can hand out that range;
-  IPv6 fd7a:115c:a1e0::/48 anywhere). Apart from the pairing code above, it only tells. Get Tailscale shows
-  the App Store page in the app (`SKStoreProductViewController`; Safari where it can't load).
+  checklist (a sheet, the App Store page, the app in the background), the scanner opens by itself
+  after a beat to see the tick, once. Back, Scan Code, Enter Address and Not Now drop it.
+- **The Tailscale tick** reads `NetworkWatch`, with no polling of its own (`PrivateNetwork`: IPv4
+  100.64.0.0/10 only on a `utun` tunnel, since a cellular network can hand out that range; IPv6
+  fd7a:115c:a1e0::/48 anywhere). Apart from the pairing code above, it only tells. Get Tailscale
+  shows the App Store page in the app (`SKStoreProductViewController`; Safari where it can't
+  load).
 - It asks for no permission: the scanner asks for the camera when Scan Code opens it, and the
   Beacon offer after pairing asks for notifications.
 - It ends with Not Now (`closeGuide`, for good) or a computer added (`addServer`, Settings' Add
@@ -503,42 +502,37 @@ the cellular deadlines go by (`RexControl.onExpensivePath`).
 
 ## Pairing
 
-`rex server tailscale pair` shows the server's https address as a QR code: no credential, nothing
-else. `Features/Pairing` scans it (AVFoundation; the camera permission is asked for when the scanner
-opens) and `PairingModel` (`State/Pairing.swift`) takes it from there, one step at a time:
+`rex server tailscale pair` shows the server's https address as a QR code: no credential,
+nothing else. `Features/Pairing` scans it (AVFoundation; the camera permission is asked for when
+the scanner opens) and `PairingModel` (`State/Pairing.swift`) takes it from there:
 
 1. Parse and normalize (`PairingCode`). A server that is already saved is opened, not added again.
 2. Check (`AppModel.check`). `ServerProbe` (RexKit) sends a plain `GET /api/control`, which Rex
    answers with 426; redirects are not followed, so only the address asked can answer. A failure
    goes through `ConnectionProblem.classify` and is worded by `PairingProblem`.
 3. Identify. `ServerPreview` (RexKit) opens one control connection, makes five read-only calls
-   (`server.status`, `server.version`, `server.whoami`, `session.list`, `client.list`) and closes.
-   It attaches to nothing, so the server drops the client the moment it closes (checked on a
-   real server: gone from `client.list` right after, with no `lost` entry). It is one attempt,
-   never retried, and its label has no device id, so the helper doesn't take it for the phone
-   being open. A call that fails leaves its fields unknown, and `IdentityCopy` words the card
-   from what the computer did say.
-4. Add & Open (Add, when the computer says it has no session). The server is saved, connects
-   and registers for pushes like any other, and `AppModel.openWhenReady` lands on its active tab
-   once its sessions are in. A computer with none leaves the empty state saying "No sessions on
-   <name> yet." with New Session (`EmptyStateCopy`).
+   (`server.status`, `server.version`, `server.whoami`, `session.list`, `client.list`) and
+   closes. It attaches to nothing, so the server drops the client the moment it closes. It is one
+   attempt, never retried, and its label has no device id, so the helper doesn't take it for the
+   phone being open. A call that fails leaves its fields unknown, and `IdentityCopy` words the
+   card from what the computer did say.
+4. Add & Open (Add, when the computer says it has no session). The server is saved, connects and
+   registers for pushes like any other, and `AppModel.openWhenReady` lands on its active tab once
+   its sessions are in. A computer with none leaves the empty state saying "No sessions on <name>
+   yet." with New Session (`EmptyStateCopy`).
 
-A failed check is worded by `PairingProblem`. A tailnet name this iPhone can't reach while it is
-on no tailnet gets one line, "This computer is on a private network this iPhone isn't part of
-yet…", with Get Tailscale, and Try Again once `NetworkWatch` reports the tailnet up
-(`PairingProblem.offTailnet`); a tailnet name not found while on a tailnet is another Tailscale
-account. Out of range and can't-find never offer Add Anyway. A refusal and a guessed address
-that isn't there offer Scan Code. An address typed in Settings → Add Computer takes the same
-path from step 2 (`AppModel.preparePairing(typed:name:)`), in that page's own pairing sheet.
-On the unfolded Duo the cards and the Beacon offer sit on the page past the crease
-(`PairingLayout.cardRect`).
-
-The camera's picture freezes under a dim from the moment a code is read; the cards sit on it.
-`AppModel.startPairing(prefilled:name:guessed:)` starts at step 2 for an address that didn't come
-from a code (a computer another server lists), with no camera.
-
-Phone-only view state (zoomed tabs, when agents started waiting) lives in `PhoneState` and never
-goes to the server, so the Mac's layout doesn't change because of the phone.
+- A tailnet name this iPhone can't reach while it is on no tailnet gets one line, "This computer
+  is on a private network this iPhone isn't part of yet…", with Get Tailscale, and Try Again once
+  `NetworkWatch` reports the tailnet up (`PairingProblem.offTailnet`); a tailnet name not found
+  while on a tailnet is another Tailscale account. Out of range and can't-find never offer Add
+  Anyway. A refusal and a guessed address that isn't there offer Scan Code.
+- An address typed in Settings → Add Computer takes the same path from step 2
+  (`AppModel.preparePairing(typed:name:)`), in that page's own pairing sheet.
+  `AppModel.startPairing(prefilled:name:guessed:)` starts at step 2 for an address that didn't
+  come from a code (a computer another server lists), with no camera.
+- The camera's picture freezes under a dim from the moment a code is read; the cards sit on it.
+  On the unfolded Duo the cards and the Beacon offer sit on the page past the crease
+  (`PairingLayout.cardRect`).
 
 ## Concurrency
 
@@ -553,10 +547,10 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
 - Reconnects bump a generation counter; every socket callback checks it before touching state.
 - `RexControl` reads time and opens its socket through a seam (`ControlSeam.swift`): a
   `ControlClock` (now, a wait, a repeating timer) and a factory of `ControlSocket`s, whose
-  requirements are `URLSessionWebSocketTask`'s own methods. The app always gets the system's clock
-  and URLSession's task; tests pass a clock they move by hand and sockets whose callbacks they
-  call themselves (`ControlTimingTests`), so the backoff, the deadlines and the generation checks
-  are tested without a server or a real wait.
+  requirements are `URLSessionWebSocketTask`'s own methods. The app gets the system's clock and
+  URLSession's task; tests pass a clock they move by hand and sockets whose callbacks they call
+  themselves (`ControlTimingTests`), so the backoff, the deadlines and the generation checks are
+  tested without a server or a real wait.
 - `ConnectionLog` is called from the main actor and from the network monitor's queue; its state
   lives on its own serial queue, where the file is read and written.
 - Ports' relay (`TunnelRelay`) runs off the main actor: after `data.connect` the bytes go between
@@ -570,17 +564,18 @@ goes to the server, so the Mac's layout doesn't change because of the phone.
 - New server call: a method on `ServerConnection` using `control.call` or `blockCall`, then
   `refreshView`. Add it to [rex-protocol.md](rex-protocol.md).
 - New server event: `ServerConnection.handle(event:)` or `handle(sessionID:event:)`.
-- New screen: `Pteron/Features/<Name>/`. Shared view pieces: `DesignSystem/`.
-- New setting: only for a choice a user would understand and want to make; otherwise pick the best
-  value and add it to "Fixed choices" in `Prefs`. A setting is a property on `Prefs` (saved in
-  `didSet`), read with `@Environment(Prefs.self)`; clear a removed one's key in `Prefs.migrate`.
+- New screen: `Pteron/Features/<Name>/`. Shared view pieces: `Pteron/DesignSystem/`.
+- New setting: only for a choice a user would understand and want to make; otherwise pick the
+  best value and add it to "Fixed choices" in `Prefs`. A setting is a property on `Prefs` (saved
+  in `didSet`), read with `@Environment(Prefs.self)`; clear a removed one's key in
+  `Prefs.migrate`.
 - Pure logic: its own type, with tests in `PteronTests` or `Packages/RexKit/Tests`.
-- Something an extension needs too (a link, later the snapshot widgets read): `GlanceModel` in
-  `Packages/RexGlance`, Foundation only, with tests in `Packages/RexGlance/Tests`.
+- Something an extension needs too: `GlanceModel` in `Packages/RexGlance`, Foundation only, with
+  tests in `Packages/RexGlance/Tests`.
 - A message the user reads: the words in `State/Messages.swift` where it says something the app
   says elsewhere too (a computer is offline, not sent, the pane closed, Rex there is too old).
-  An error is worded from its code (`Messages.reason`), never from the server's text, an
-  error's `localizedDescription` or an action's id; RexKit reports what happened
+  An error is worded from its code (`Messages.reason`), never from the server's text, an error's
+  `localizedDescription` or an action's id; RexKit reports what happened
   (`TerminalStream.Notice`) and the app words it. A computer is named by its name, never "the
   server" or "the Mac". Why an agent waits is `WatchScreen.words(why:)` in `GlanceModel`, the
   one set for the app, the widgets and the watch.

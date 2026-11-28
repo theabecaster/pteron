@@ -1,7 +1,7 @@
 # iPhone Duo layout and the vertical bar
 
 How Pteron lays out the sidebar and the tab, and how it uses the system's vertical bar on the
-iPhone Duo. Checked against the iOS 27.2 SDK and Apple's docs, November 2026.
+iPhone Duo.
 
 ## What Apple says about the vertical bar
 
@@ -55,83 +55,19 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   there are none. The sidebar's mode switch, and the title bar or the strip while one reaches that
   corner, move their content right by the controls' width; backgrounds still run to the edge. Full
   screen, on an iPhone and on the Duo nothing moves.
-- **Tab mode** (`NavigationStyle`, `Prefs.navigation`). The other way around the app, like the
-  Mac app's tabs above: no sidebar in any posture, and in the title bar's place, at 44 pt (34 pt in a short window),
-  the tab strip (`TabStrip`). The choice is Settings → Appearance → Navigation; sidebar mode
-  is the default. [tab-mode.md](tab-mode.md) has all of it; what follows is what the window
-  and the fold decide.
-  - **A change applies at once.** `SidebarSplit` stops building the sidebar and gives the tab the
-    window's width, and the tab's header draws the strip instead of the title bar. The tab stays
-    the same view with the same panes and terminals (`NavigationSwitchTests`). On a wide window
-    the panes gain the sidebar's width, one fit resize; on a narrow one nothing changes size.
-  - **What the strip shows** is decided from its width alone (`StripLayout`), left to right: the
-    session chip, the session's tabs as chips (they scroll), the pane dots, the waiting pill,
-    Unzoom, New Tab, the pane menu. Unzoom and the pane menu are in the vertical bar where there
-    is one. The layout can keep one more 44 pt slot beside the pane menu, for a control of a
-    tab's floating windows (`hasFloatsControl`); with it the strip is compact 44 pt sooner. Parts a finger taps are 44 pt wide or more; 6 pt lie between the session chip and
-    the chips, between chips, and after them.
-  - **Compact.** Where the full strip would leave the chips less than 144 pt (the active chip
-    with its close button and one more chip), it is compact: New Tab and Unzoom are left to the
-    Pane Actions menu and the session chip is a glyph with its waiting dot. That is under
-    440 pt beside a vertical bar and under 520 pt without one: every iPhone in portrait, the
-    folded Duo, half the inner screen. It is decided for the bar with every part in it, so a
-    pill or dots that come and go never move the rest. The pane dots are the title bar's
-    while they read clearly (up to six panes, and the chips keep 144 pt), else a count ("2/5")
-    where it fits, else nothing ([tab-mode.md](tab-mode.md)). The title bar's own dots are
-    unchanged.
-  - **Chips.** The active chip shows the tab's title, the status of the pane on screen, the
-    waking mark and a close button (`TabChip`); the close button goes where the chips have less
-    than 144 pt, and Close Tab stays in the pane menu. Any other chip shows its tab's status as
-    its sidebar row does, and cuts its title at 120 pt. A chip shows up to three pane icons.
-  - **Crease.** In book mode the whole strip, New Tab included, ends 3 pt short of the crease,
-    on the left page. Flat, it runs the bar's width as the title bar does. A bar with too
-    little before the crease for the session chip (and the pane menu, where the strip has
-    one) has its strip past the crease instead, and under 16 pt of room it draws nothing, so
-    nothing is ever on the fold (`StripLayout.run`).
-  - **Chips do** what the sidebar's tab rows do (`StripRoutes`). A tap shows the tab, and the
-    row of chips scrolls to keep the tab on screen in view. Touch and hold for Rename Tab…,
-    Move Tab Backward, Move Tab Forward, Close Tab and Close Other Tabs. A tab with an agent or
-    two panes or more asks before it closes, as everywhere (`CloseTabAsk`); Close Other Tabs
-    always asks. A move takes the sidebar drag's path:
-    the new order shows at once and is held for the server, and a server without
-    `session.move_window` offers no Move rows. Chips aren't dragged: a sideways drag scrolls
-    the row.
-  - **The session chip** opens the sessions in a popover (`SessionPopover`): each machine with
-    its status, "+" for a new session there, Reconnect while it is down, and the globe of its
-    web ports while it has one, which opens them in a sheet (`PortsSheet`); its sessions, a tap
-    away, each with Rename Session… and Close Session on its menu, as in the sidebar (none on a
-    computer that is down); the computers that aren't added; then Go to Anything…, Agents and
-    Settings. A row that puts up a sheet, an alert or the palette runs once the popover has
-    gone, and after 1 s at the latest (`DismissalWait`). The chip is as wide as its session's name needs, up to 120 pt.
-  - **Vertical bar.** No sidebar toggle and no sessions item: the session chip beside the tabs
-    opens the sessions, and the strip places it in every posture with the bar. The bar is Hide
-    Keyboard while the key bar is up, then Show All Tabs, then Pane Actions (Unzoom above All
-    Tabs while zoomed, with the keyboard down). With no toggle, All Tabs stays below Hide
-    Keyboard while typing where the bar fits three (`TabActions.tabItems`). Back in sidebar mode
-    the toggle is back and the bar is as before.
-  - **Without the sidebar.** cmd+. and the board's "+K more" open the Agents sheet
-    (`AppModel.showAgents`). Show/Hide Sidebar does nothing and isn't in the palette; the swipe
-    from the left edge is off. With no tab on screen the strip stays, for its session chip,
-    and the screen says "Pick a session." with Change Session, which opens the palette's
-    sessions. A machine that is down shows its offline screen below the strip, so another
-    machine's sessions stay a tap away; its Show Sidebar is Change Session.
-  - **The sidebar is left as it was.** Nothing in tab mode writes whether it shows or which
-    mode it is in (`SidebarState.write`): not a tab that is shown, not book mode, not a key.
-    Back in sidebar mode it shows as before. Only two things differ: the list starts at its
-    top, and the tab on screen has its row, its session and machine opened if they were folded.
-  - **Typing in a short window** (a phone on its side) hides the strip with the keyboard, as
-    it hides the title bar, so the terminal keeps its rows. Hide Keyboard brings it back, and
-    the hardware keys work meanwhile.
+- **Tab mode** (`NavigationStyle`, `Prefs.navigation`). No sidebar in any posture; the tab strip
+  (`TabStrip`) takes the title bar's place, as the Mac app's tabs do. [tab-mode.md](tab-mode.md)
+  has the strip, its compact form, the crease, the vertical bar's items and where the sidebar's
+  things went.
 - **A cold launch opens on its tab.** In a narrow window (the folded Duo) the drawer starts
   closed, so the tab viewed last shows (`SidebarState.launchHold`). Only at a process start in
   sidebar mode, and only with a tab to show: the tab viewed last on a computer still added, or
   the `-autoOpen` session's. It is decided from saved state when the model is made
-  (`AppModel.launchHold`), so the first frame already has it, and the first window takes it: a
-  scene the system rebuilds, a return from the background and tab mode are as before. Only the
+  (`AppModel.launchHold`), so the first frame already has it, and only the first window takes
+  it: not a scene the system rebuilds, a return from the background or tab mode. Only the
   drawer: beside the tab the sidebar shows as at any launch. Never saved. The first change to the
-  sidebar ends it, and so does the window turning wide, where the sidebar shows beside the tab.
-  There it makes room in the unfold's own layout, with no slide first, so the panes are resized
-  once, not to the window's whole width and then again.
+  sidebar ends it, and so does the window turning wide, where the sidebar makes room in the
+  unfold's own layout, with no slide first, so the panes are resized once.
 - **Resize and collapse.** Drag the sidebar's edge: 200 pt to half the window inline, up to 85% as a
   drawer. It snaps to 260 pt and, inline, to the crease. Let go under 140 pt and it collapses. The
   width is remembered per posture. The toggle button, the Show/Hide Sidebar command and a swipe from
@@ -239,8 +175,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   - **Display only** (`TerminalHostPool.setCovered`). The tab stays mounted under the board,
     with its streams, so it is there at once afterwards. Meanwhile its panes draw nothing and
     take no key, from a hardware keyboard or the key bar's cmd. Nothing is claimed, resized or
-    given back on the Mac when the board comes or goes, also when the phone turns under it:
-    `FIT_RESIZE` stays silent. The software keyboard and a sidebar drawer are put away on the
+    given back on the Mac when the board comes or goes, also when the phone turns under it
+    (`FIT_RESIZE` stays silent). The software keyboard and a sidebar drawer are put away on the
     way in, and the keyboard stays down afterwards, as after the hide key. A pane that showed
     only its key bar for a hardware keyboard gets it back.
   - **Touch** (`BoardPresence`). A tile opens its agent's tab with its pane in view, as in
@@ -261,8 +197,8 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   Windows while a narrow tab has a float and the keyboard is down. While a pane's key bar is up,
   they are Hide Keyboard, the sidebar toggle, then Pane Actions (`TabActions`). Tab mode has no
   toggle: there they are Hide Keyboard, All Tabs, Pane Actions, and with the keyboard down All
-  Tabs and Pane Actions. The tab's title,
-  status and pane dots stay in the thin title bar, since text stays horizontal. Elsewhere the
+  Tabs and Pane Actions. The tab's title, status and pane dots stay in the thin title bar, since
+  text stays horizontal. Elsewhere the
   navigation bar stays hidden and the title bar holds the same buttons.
 - **The browser's buttons.** A page's sheet (docs/terminal.md, Ports) has Done and its menu in
   the vertical bar, by the system, and back, forward and reload at the bar's bottom, by the app
@@ -270,26 +206,27 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
 - **Hide Keyboard.** The key bar's hide key, moved into the vertical bar beside the keyboard. It
   shows while the pane's key bar does, over the software keyboard or alone for a hardware one,
   and does what the hide key does: the software keyboard resigns, the bar alone goes quiet and
-  hardware keys still type. The pane's host says when its key bar is up with the hide key in the
-  bar (`TerminalHost.barHidesKeyboard`), never a keyboard notification alone; the notification
-  only gives the swap the keyboard's animation, so it happens with the keyboard. With the
-  keyboard up the bar has room for three items (the outer screen upright, and on its side with
-  the bar on the right): a fourth, in any placement or priority, sends Pane Actions or the
-  sidebar toggle into the system's "…" menu. So Hide Keyboard takes All Tabs' place in the count
-  and goes first, at the top of the bar above the sidebar toggle (the root draws both), since
-  while typing it is the item used most (owner's call, November 2026). With the keyboard down it
-  is not in the bar at all, and the bar is the sidebar toggle, All Tabs, Pane Actions, as before;
-  while typing All Tabs stays in the Pane Actions menu's first section and in the title menu.
-  In tab mode the toggle's place is free, so All Tabs keeps its own below Hide Keyboard. In
-  sidebar mode VoiceOver finds one of the two in the
-  bar, and one Hide Keyboard in every state: the item, or without a vertical bar the key bar's
-  own. On its side with the bar on the left, the bar's items start lower, past the camera, and
-  with the keyboard up only two fit (iOS 27.2 simulator, November 2026). There, while the key bar
-  is up, the sidebar toggle (in tab mode All Tabs) leaves the bar and it shows Hide Keyboard,
-  then Pane Actions; what left comes back with the keyboard. Unzoom,
-  where it shows, leaves first in any posture, and stays in the Pane Actions menu. Nothing goes into the "…" menu
-  (`TabActions.keyBarRoom`). The system reports neither the items' frames nor the camera's
-  offset, so the room comes from the bar's column on the screen's left and a compact height.
+  hardware keys still type.
+  - The pane's host says when its key bar is up with the hide key in the bar
+    (`TerminalHost.barHidesKeyboard`), never a keyboard notification alone; the notification only
+    gives the swap the keyboard's animation, so it happens with the keyboard.
+  - With the keyboard up the bar has room for three items (the outer screen upright, and on its
+    side with the bar on the right): a fourth, in any placement or priority, sends Pane Actions
+    or the sidebar toggle into the system's "…" menu. So Hide Keyboard takes All Tabs' place and
+    goes first, above the sidebar toggle (the root draws both), since while typing it is the item
+    used most (owner's call). While typing, All Tabs stays in the Pane Actions menu's first
+    section and in the title menu. In tab mode the toggle's place is free, so All Tabs keeps its
+    own below Hide Keyboard. With the keyboard down Hide Keyboard is not in the bar.
+  - On its side with the bar on the left, the bar's items start lower, past the camera, and with
+    the keyboard up only two fit. There, while the key bar is up, the sidebar toggle (in tab mode
+    All Tabs) leaves the bar, which shows Hide Keyboard, then Pane Actions; what left comes back
+    with the keyboard. The system reports neither the items' frames nor the camera's offset, so
+    the room comes from the bar's column on the screen's left and a compact height
+    (`TabActions.keyBarRoom`).
+  - Unzoom, where it shows, leaves first in any posture, and stays in the Pane Actions menu.
+    Nothing goes into the "…" menu.
+  - In sidebar mode VoiceOver finds one of the two in the bar, and one Hide Keyboard in every
+    state: the item, or without a vertical bar the key bar's own.
 - **Key bar.** The keyboard keeps its full width and runs under the vertical bar; only the key
   bar's own views keep out of the bar's column. That column is the app window's safe-area inset
   on the bar's edge (`KeyBarPlacement.column`), read with the edge on every change of the traits
@@ -310,57 +247,60 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
   background of its own. The keys sit bare in three glass capsules tinted with the keyboard's
   color, 6 pt from the sides like the keyboard's keys and 6 pt from each other, with 4 pt of air
   above and below. A pressed key, an active ctrl, option or shift, and ✎ while compose is open
-  show a pill. The middle capsule's keys fade at an edge with more keys past it. With a hardware
+  show a pill. With a hardware
   keyboard the bar (and compose's card, while it is open) still shows on its own at the bottom,
   for esc, ctrl and the arrows; its hide key, or Hide Keyboard in the vertical bar, puts it away.
 - **Keyboard room.** The root ignores SwiftUI's keyboard safe area and pads its bottom by
   `KeyboardInset`, computed from the keyboard's last reported frame and the root's frame on every
-  keyboard change and layout. SwiftUI's own could stay at a frame the keyboard had for a moment
-  (both panes' key bars during a pane swipe) and leave a band of chrome above the key bar.
+  keyboard change and layout. Why: SwiftUI's own could stay at a frame the keyboard had for a
+  moment (both panes' key bars during a pane swipe) and leave a band of chrome above the key bar.
   While the keyboard is up the key bar's own top is a floor, for reports without it
   ([terminal.md](terminal.md), Input, Keyboard room).
-  The room is padding below the navigation stack, not a safe area inside it: the stack hosts its
-  content on its own, and that host avoids a keyboard over its frame by itself. With a keyboard
-  taller than about half the window (the key bar with Compose's card) it centered the content on
-  the room left, so the title bar slid off the window's top and the panes were measured too tall.
-  The room is painted in the terminal's color, which shows behind the key bar's glass and the
-  keyboard's corners. Nothing in the tab has a height of its own the room can't take: the inline
-  sidebar's picker and rows clip to it, since the stack they share places the tab at the taller
-  of the two, and a short window (a phone on its side with Compose's card) left the panes running
-  under the card.
-  The panes' frames follow that room, but a fitted terminal's grid doesn't: the keyboard covers
-  it ([terminal.md](terminal.md), Fit and mirror).
+  - The room is padding below the navigation stack, not a safe area inside it. The stack's host
+    avoids a keyboard over its frame by itself: with a keyboard taller than about half the
+    window (the key bar with Compose's card) it centered the content on the room left, so the
+    title bar slid off the top and the panes were measured too tall.
+  - The room is painted in the terminal's color, which shows behind the key bar's glass and the
+    keyboard's corners.
+  - Nothing in the tab has a height of its own the room can't take: the inline sidebar's picker
+    and rows clip to it, since the stack they share places the tab at the taller of the two (a
+    short window with Compose's card otherwise ran the panes under the card).
+  - The panes' frames follow that room, but a fitted terminal's grid doesn't: the keyboard covers
+    it ([terminal.md](terminal.md), Fit and mirror).
 - **Background.** The chrome color runs edge to edge under the status bar and the vertical bar.
   The panes stay inside the safe area at the top and the sides, so no terminal text sits under the
   status bar, the notch, the Dynamic Island or the vertical bar. No band of chrome shows under the
   terminal.
 - **Bottom edge** (`PaneBottom`). With the keyboard down the panes run on past the bottom safe
-  area as far as the window's rounded corners allow, sidebar mode and tab mode alike: down to the
+  area as far as the window's rounded corners allow, in both navigation modes: down to the
   height where a bottom corner would reach further in than the first or last column (its side
   inset and the pane's padding, `PaneLayout.bottomPadding`) plus half a cell, and never short of
-  the safe area. So a window with square corners, a phone on its side (the corners stay outside
-  the side insets), the folded Duo (its large corner is on the bar's side) and an iPad run to or
-  near the edge, under the home indicator, and an iPhone held upright keeps its rows where they
-  always were: its corners would take cells off the last rows. No cell loses more of its glyph to
-  a corner than before. The corners come from the window (iOS 26: the root's probe takes
-  `containerConcentric` corners and reads `effectiveRadius(corner:)`), modelled as a circle a
-  little larger than that radius, which stays outside the measured display masks
-  (`PaneBottom.clearHeight`); before iOS 26 nothing gives them, and the panes keep to the safe
-  area. The area ignores the bottom safe area (and the keyboard's region, which SwiftUI keeps for
-  a layout or two as the keyboard goes) and gives back what the corners don't allow as padding;
-  the terminal's color runs on to the edge in every case. The inset, the side insets and the
-  corners come from UIKit's window in one pass (`KeyboardInsetReader`): with the keyboard up
-  SwiftUI counts the inset as the keyboard's. With the software keyboard up,
-  or a hardware keyboard's key bar alone, they end where they always did, at its top, and the
-  terminal's color runs on behind the key bar and the keyboard's corners. The canvas with the
-  keyboard down is the one the corners allow either way (`PaneLayout.restCanvas`), so showing or hiding
-  the keyboard resizes nothing more than before. Splits divide the safe area as before; only the
-  panes on its bottom edge run on. Whether a tab shows splits or pages, book mode and where floats
-  go are decided from the canvas inside the safe area, as before (`PaneBottom.inside`), so no tab
-  shows differently. What is chrome stays clear of the home indicator: floating windows and the
-  narrow float sheet keep inside the safe area, and the jump-to-bottom button, the floating find bar and the
-  selection handles' knobs keep above the pane's bottom safe area. Without a home indicator
-  (iPhone SE) nothing changes.
+  the safe area.
+  - So a window with square corners, a phone on its side (the corners stay outside the side
+    insets), the folded Duo (its large corner is on the bar's side) and an iPad run to or near
+    the edge, under the home indicator. An iPhone held upright keeps its rows inside the safe
+    area: its corners would take cells off the last rows. No cell loses more of its glyph to a
+    corner than it would inside the safe area.
+  - The corners come from the window (iOS 26: the root's probe takes `containerConcentric`
+    corners and reads `effectiveRadius(corner:)`), modelled as a circle a little larger than that
+    radius, which stays outside the measured display masks (`PaneBottom.clearHeight`). Before
+    iOS 26 nothing gives them, and the panes keep to the safe area.
+  - The area ignores the bottom safe area (and the keyboard's region, which SwiftUI keeps for a
+    layout or two as the keyboard goes) and gives back what the corners don't allow as padding;
+    the terminal's color runs on to the edge in every case. The inset, the side insets and the
+    corners come from UIKit's window in one pass (`KeyboardInsetReader`), because with the
+    keyboard up SwiftUI counts the inset as the keyboard's.
+  - With the software keyboard up, or a hardware keyboard's key bar alone, the panes end at its
+    top, and the terminal's color runs on behind the key bar and the keyboard's corners. The
+    canvas with the keyboard down is the one the corners allow either way
+    (`PaneLayout.restCanvas`), so showing or hiding the keyboard causes no extra resize.
+  - Splits divide the safe area; only the panes on its bottom edge run on. Whether a tab shows
+    splits or pages, book mode and where floats go are decided from the canvas inside the safe
+    area (`PaneBottom.inside`), so the run-on never changes them.
+  - Chrome stays clear of the home indicator: floating windows and the narrow float sheet keep
+    inside the safe area, and the jump-to-bottom button, the floating find bar and the selection
+    handles' knobs keep above the pane's bottom safe area. Without a home indicator (iPhone SE)
+    nothing changes.
 - **Title bar** (`TitleLine`). One line, like the Mac's title bar: the tab's title (semibold),
   its status, then the session's name in the secondary color (with the computer's name when
   more than one is set up), then the menu chevron. When both don't fit, the session's name
@@ -373,8 +313,7 @@ SDK (iOS 27.1+): `UITraitCollection.verticalBarEdge`, SwiftUI `EnvironmentValues
     the line changes nothing: one line, one height. Every button keeps its 44 pt width and
     takes the bar's height as its hit height; no hit area reaches over the terminal.
   - **Short windows** (landscape iPhone): 4 pt above and below, 30 pt at the default text size
-    and never more than 34 pt.
-- **Short windows** (landscape iPhone): the strip is 34 pt and the key bar 42 pt.
+    and never more than 34 pt. There the strip is 34 pt and the key bar 42 pt.
 - **Offline screen** (`OfflineLayout`). It fills the tab, so an inline sidebar stays beside it. Where
   the crease crosses it with room on both sides, it is two pages: the glyph large on the left (or top)
   page, the card on the other, each centered in its page and 12 pt clear of the crease. With room for

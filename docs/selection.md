@@ -24,9 +24,9 @@ Manual device script: [terminal-checklist.md](terminal-checklist.md), "Selection
 - **Tap elsewhere** clears. A tap within 3 columns and 1 row of the cursor (terminal focused, no
   selection, no mouse-tracking program) shows Paste.
 - Pointer (mouse, trackpad) drags select directly, with no loupe, handles or haptics.
-- **Share…** is the edit menu's last item, after Select All, whenever there is a selection: the
-  selection as plain text through the share sheet, formatted off the main thread, then cleared
-  once the sheet is up ([terminal.md](terminal.md), Share).
+- **Share…**, the edit menu's last item whenever there is a selection, sends the selection as
+  plain text through the share sheet, formatted off the main thread, then cleared once the sheet
+  is up ([terminal.md](terminal.md), Share).
 - Without a selection nothing is drawn and no touch is intercepted.
 
 ## Why our own handles and not UITextInteraction
@@ -103,9 +103,8 @@ GhosttyTerminalView (points, cells and rects all from GhosttyGridGeometry)
   its edge. The controller widens that to 18 pt and repeats every 60 ms while the finger rests.
 - **Taps are counted in the host's tap handler** (0.35 s, 28 pt), not by recognizers that wait for
   each other, so a single tap acts at once.
-- **Edit menu**: Copy, Paste, Select All, then Open File (a selection that names a file), Find
-  Selection, Paste Image or Paste File and Share…, above the selection when there is room. Hidden while a
-  finger is on the selection.
+- **Edit menu**: the items under Lift (Open File only for a selection that names a file), above
+  the selection when there is room. Hidden while a finger is on the selection.
 
 ### Performance
 

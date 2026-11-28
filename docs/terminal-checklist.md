@@ -1,45 +1,45 @@
 # Terminal regression checklist
 
 What the terminal must do, row by row, and how each row is checked. Run the tests after a change
-to the terminal; run the two manual scripts at the end on a device before a release that touched
+to the terminal; run the manual scripts at the end on a device before a release that touched
 gestures, input, selection or rendering.
 
-Add a row when the terminal gains a behaviour, with the test that pins it. How the engine is
-built: [ghostty-engine.md](ghostty-engine.md). The stream and input rules:
-[terminal.md](terminal.md). Selection: [selection.md](selection.md).
+Add a row when the terminal gains a behaviour, with the test that pins it. Never renumber a row:
+tests and docs cite them. How the engine is built: [ghostty-engine.md](ghostty-engine.md). The
+stream and input rules: [terminal.md](terminal.md). Selection: [selection.md](selection.md).
 
 How a row is verified:
 
-- a test name: an XCTest or Swift Testing test in `PteronTests` (runs in the simulator), or
-  in RexKit where it says so.
+- a test name: an XCTest or Swift Testing test in `PteronTests` (runs in the simulator), or in
+  RexKit where it says so.
 - **live**: run in the simulator in a throwaway `zz-` session, checked with screenshots and
   `rex capture` of that pane.
-- **hand**: needs touches, a hardware keyboard or a device. Touches can't be injected with this
-  Xcode, so these rows are only as good as the last run of the manual scripts.
+- **hand**: needs touches, a hardware keyboard or a device. Touches can't be injected into the
+  simulator, so these rows are only as good as the last run of the manual scripts.
 
 ## Table
 
 | # | Item | Verified by | What must hold |
 | --- | --- | --- | --- |
 | 1 | Feed, snapshot restore | `GhosttyCoreTests`, RexKit `Stream*` tests, live | The pane restores Rex's snapshot: the screen, the scrollback and the prompt are the server's (live: `seq 1 300` and a prompt). A snapshot that can't be restored falls back to `terminal.format` (row 49). |
-| 2 | Resize and reflow | `GhosttyCoreTests`, live (fold cycle against `rex capture`) | The terminal reflows locally the way the server does, so a new width needs no redraw from the server. After folded → unfolded → folded the local screen matches `rex capture` line for line. See "Reflow" below for where it can differ. |
+| 2 | Resize and reflow | `GhosttyCoreTests`, live (fold cycle against `rex capture`) | The terminal reflows locally as the server does, so a new width needs no redraw from the server. After folded → unfolded → folded the local screen matches `rex capture` line for line. Where it can differ: "Reflow" below. |
 | 3 | Fit grid (cell size) | `GhosttyViewTests.testFitGridFollowsTheFontAtEveryFontSize` | At every font size from 7 to 20 pt in 0.5 steps a cell is the font's advance wide and its line height tall, both in whole device pixels. The height is never more than the line height rounded up to a whole point and less than a point under it, so a pane fits up to about 10% more rows than whole-point rows would, never fewer. The Mac's pane is resized to that grid. |
 | 4 | System keyboard text | `GhosttyInputViewTests.testTypedTextIsSentAsItsBytesInEveryMode`, `testRawSendsGoOutUnchanged`, live (`-typeTest`) | Typed text goes out as its bytes in normal, DECCKM, DECBKM and bracketed-paste modes; a line feed is Return; DECBKM changes Backspace. Under the Kitty protocol the key is named. |
 | 5 | Key bar keys and trackpad | `GhosttyInputViewTests.testCursorKeysInBothCursorModes`, `testRawSendsGoOutUnchanged` | The bar encodes its own bytes; arrows, Home and End follow DECCKM. |
 | 6 | Key bar ctrl / alt, one shot and locked, with characters | `GhosttyInputViewTests.testOneShotControlSendsTheControlCharacter`, `testOneShotMetaSendsEscapeThenTheText`, `testOneShotModifiersClearAndNotify` | Includes Ctrl+I, Ctrl+M and Ctrl+[ as Tab, Return and Escape in legacy mode. |
 | 7 | Key bar ctrl / alt with Backspace, Return, Tab | `GhosttyViewTests.testOneShotControlWithReturnOrTabSendsThePlainKeyInLegacyMode`, `testOneShotModifiersApplyToBackspaceAndReturn` | Alt+Backspace sends `ESC DEL` (delete a word) and uses up the flag. Ctrl+Backspace sends `0x08`, as Ghostty does. Ctrl+Alt+letter applies both. Ctrl+Return and Ctrl+Tab send the plain key in legacy mode (never `CSI 27;5;13~`, which a shell prints). |
 | 7a | Key bar cmd: the next key runs its Rex shortcut and is never typed | `KeyBarCommandTests`, `KeyBarPressTests`; hand | Once and locked; system keyboard characters (shift as the US key needs it) and bar keys; ctrl/alt with cmd make one chord; an unbound chord sends nothing and plays the error haptic. The haptic and a finger on the cap: hand. |
-| 7b | Key bar Return: pinned, held for Shift-Return; the ⇧⏎ key, pinned before it, sends the same | `KeyBarCommandTests` (the pinned Return and Shift-Return key tests), `FixedKeysTests` (⌘ ✎ attach left, ⇧⏎ and Return at the middle capsule's end, ✥ and hide right, none on a crease); hand | Once per bar, outside the scroll view; ctrl, alt and cmd as before; held: `CSI 27;2;13~` or `CSI 13;2u`, or `shift+cmd+enter` with cmd; commits a composition instead of sending; nothing under the agent board. The hold's timing and haptic need a finger: hand. |
+| 7b | Key bar Return: pinned, held for Shift-Return; the ⇧⏎ key, pinned before it, sends the same | `KeyBarCommandTests` (the pinned Return and Shift-Return key tests), `FixedKeysTests` (⌘ ✎ attach left, ⇧⏎ and Return at the middle capsule's end, ✥ and hide right, none on a crease); hand | Once per bar, outside the scroll view; ctrl, alt and cmd apply; held: `CSI 27;2;13~` or `CSI 13;2u`, or `shift+cmd+enter` with cmd; commits a composition instead of sending; nothing under the agent board. The hold's timing and haptic: hand. |
 | 7d | Key bar setup: sections, groups, shortcuts, migration | `KeyBarSetupTests` (the first setup, edits, resets, the stored format, every layout and saved list migrated with the same keys, version 2's Shift-Return added once, shortcut bytes), `KeyBarSetupBarTests`; simulator screenshots | The middle capsule shows the setup's items in order; a group is a menu key or, expanded, its shortcuts as keys; every shortcut's bytes go through the input queue and the fence. |
 | 7e | Compose: one write of the message, then Return; focus without a keyboard flicker | `ComposeTests` (the bytes, bracketed and not, 10,000 characters, emoji and CJK, the draft per pane, the focus hand-over, the fence's drop putting the message back), `ComposePlaceholderTests`; simulator screenshots; hand | Send writes the message as a paste and Return as a write of its own; the field takes the keyboard inside the bar on screen and gives it back to the terminal the same way. The keyboard's motion on a device, dictation and autocorrect: hand. |
-| 7c | Hide Keyboard in the Duo's vertical bar | `KeyBarPlacementTests` (the column, both edges and RTL), `KeyBarColumnTests`, `HideKeyboardItemTests`, `HideKeyboardItemHostTests`, `TabActionsTests`; simulator (the Duo's outer screen); hand | Beside the vertical bar the key bar draws no hide key, and nothing of it or of the find bar reaches into the bar's column or takes a touch there. The bar's Hide Keyboard item shows exactly while the pane's key bar shows (software keyboard, or the bar alone for a hardware keyboard, which it quiets), first, at the top of the bar above the sidebar toggle, while All Tabs leaves the bar (in tab mode, which has no toggle, All Tabs stays where the bar fits three), with the keyboard's animation; no "…" overflow (on the outer screen on its side with the bar on the left the sidebar toggle, or in tab mode All Tabs, leaves while the key bar is up: duo-layout.md, Hide Keyboard), and All Tabs stays in the Pane Actions and title menus. One Hide Keyboard for VoiceOver in every state. Without a vertical bar the key bar is as before. Reaching the bar's items with the keyboard up, and the item's motion: hand, on a device. |
+| 7c | Hide Keyboard in the Duo's vertical bar | `KeyBarPlacementTests` (the column, both edges and RTL), `KeyBarColumnTests`, `HideKeyboardItemTests`, `HideKeyboardItemHostTests`, `TabActionsTests`; simulator (the Duo's outer screen); hand | Beside the vertical bar the key bar draws no hide key, and nothing of it or of the find bar reaches into the bar's column or takes a touch there. The bar's Hide Keyboard item shows exactly while the pane's key bar shows (software keyboard, or the bar alone for a hardware keyboard, which it quiets), first, above the sidebar toggle, with the keyboard's animation, while All Tabs leaves the bar (in tab mode, which has no toggle, All Tabs stays where the bar fits three). No "…" overflow: on the outer screen on its side with the bar on the left, the sidebar toggle (tab mode: All Tabs) leaves while the key bar is up ([duo-layout.md](duo-layout.md), Hide Keyboard). All Tabs stays in the Pane Actions and title menus. One Hide Keyboard for VoiceOver in every state. Without a vertical bar the key bar is unchanged. Reaching the bar's items with the keyboard up, and the item's motion: hand, on a device. |
 | 8 | Hardware keyboard | `GhosttyInputKeyTests`, `GhosttyInputViewTests.testHardwareKeysAreEncodedOrLeftToTheTextSystem`, `testHeldKeyRepeatsUntilReleased`; hand | Tests drive `hardwareKeyDown` with `UIKey`'s properties, since a `UIKey` can't be made. Real presses, layouts, dead keys and key repeat need a keyboard. With one-shot ctrl from the key bar a hardware function key takes the modifier. |
 | 9 | Keymap bindings (`keyHook`), ⌘ commands | hand | The hook sees each press before the terminal does (`pressesBegan` asks it first). |
-| 9a | Hardware keyboard: no system focus halo on a pane | `KeyboardFocusPolicyTests.panesStayOutOfTheSystemFocus`; live (iPad simulator, real key events: Tab and arrows with and without a focused terminal, screenshots) | The terminal view can't become focused and draws no focus effect. iPhone has no focus system at all (`UIFocusSystem.focusSystem(for:)` is nil) unless Full Keyboard Access is on; that ring is the system's and is left alone. |
-| 9b | Hardware keyboard: arrows, Tab, Enter, Escape reach the program | `GhosttyInputViewTests.testHardwareKeysAreEncodedOrLeftToTheTextSystem`; live (real key events: arrows and Tab reached `pressesBegan` and the shell) | True whenever the terminal is first responder, which `KeyboardFocusPolicy` keeps it with a hardware keyboard. |
+| 9a | Hardware keyboard: no system focus halo on a pane | `KeyboardFocusPolicyTests.panesStayOutOfTheSystemFocus`; live (iPad simulator, real key events: Tab and arrows with and without a focused terminal, screenshots) | The terminal view can't become focused and draws no focus effect. iPhone has no focus system (`UIFocusSystem.focusSystem(for:)` is nil) unless Full Keyboard Access is on; that ring is the system's and is left alone. |
+| 9b | Hardware keyboard: arrows, Tab, Enter, Escape reach the program | `GhosttyInputViewTests.testHardwareKeysAreEncodedOrLeftToTheTextSystem`; live (real key events reached `pressesBegan` and the shell) | True whenever the terminal is first responder, which `KeyboardFocusPolicy` keeps it with a hardware keyboard. |
 | 9c | Hardware keyboard: a pane switch moves the keyboard | `KeyboardFocusPolicyTests`; live (⌥⌘←, ⌘], ⌘[ in splits and one pane at a time: the next key typed landed in the new pane, checked with `rex capture`) | Also across a fold or unfold (the pool moves the host, UIKit takes the keyboard, the host takes it back), after Settings, and back from the background. |
-| 9d | ⌘/ toggles the sidebar in each posture | `ToggleSidebarKeyTests`, `KeyboardLayoutTests`, `SidebarStateTests`, `HardwareKeyPathTests`, `AppShortcutTests`; live (inline on the unfolded size, drawer on the folded size and on an iPhone, and with no first responder at all) | With a terminal focused the key runs through `keyHook`; with none, through the app's menu (`AppShortcutCommands`). |
-| 9e | The pool never strands a pane off screen | `TerminalHostPoolTests`; live (three panes on the unfolded size) | The newest container in a window shows the host, not the newest one made. (Before: the active pane was blank and had no keyboard.) |
+| 9d | ⌘/ toggles the sidebar in each posture | `ToggleSidebarKeyTests`, `KeyboardLayoutTests`, `SidebarStateTests`, `HardwareKeyPathTests`, `AppShortcutTests`; live (inline on the unfolded size, drawer on the folded size and on an iPhone, and with no first responder) | With a terminal focused the key runs through `keyHook`; with none, through the app's menu (`AppShortcutCommands`). |
+| 9e | The pool never strands a pane off screen | `TerminalHostPoolTests`; live (three panes on the unfolded size) | The newest container in a window shows the host, not the newest one made; otherwise the active pane is blank and has no keyboard. |
 | 9f | No key reaches a screen the user did not see | `StreamFenceTests` (every rule of the catch-up fence), `StreamParkTests`, `CatchUpFenceHostTests`; live (a byte log in a `zz-` pane: typed on an idle return, the keys arrive once, in order; on a busy return, nothing arrives and the notice shows) | Held keys go only over an exact screen; reports, key actions and typed paths are dropped; one notice per fence at most. |
 | 9j | Predicted echo: on a slow link a key at a shell prompt shows at once, and nowhere else | RexKit `EchoPredictorTests`, `EchoGateTests`, `EchoHostGateTests`, `StreamEchoTests`; `EchoScriptTests` (recorded zsh sessions through the real core: typing, a typo, `read -s`, a password typed ahead, a silent reader, vim, a redrawn prompt, a right-hand prompt, a wrap, a late echo, a resize), `EchoRenderTests`, `EchoRaceTests`, `EchoParityTests`, `EchoHostTests`; the benchmark's `predict`; live (`-netDelay 150` in a `zz-` pane) | No guess at a prompt that does not echo, in an agent's pane, on the alternate screen, behind the fence, while composing, selecting, finding or scrolled back. A wrong guess goes in the frame that shows what proved it wrong. A frame's guesses belong to its rows. A fast pane has no predictor, no echo build and no echo buffer. What is sent never changes. |
 | 9g | A pane that comes back is there at once | `PaneParkTests` (the park, the LRU of 4 within 96 MB, the 10 s claim grace, eviction), `StreamParkTests`; the benchmark's `--switch` | Its last screen in the first frame, a hollow cursor while it catches up, the catch-up as one frame (`CatchUpFenceHostTests.testACatchUpInSeveralChunksIsShownAsOneFrame`). |
@@ -56,7 +56,7 @@ How a row is verified:
 | 18 | Pinch font size | `TerminalPinchTests`; hand | The text scales under the fingers; on release the size is stored and the font and the grid change. On a pane resized elsewhere the pinch also fits it here. The terminal keeps its modes and its screen, so nothing is reloaded from the server. |
 | 19 | Long press selects a word | `GhosttySelectionTests` (words, paths, URLs, wide characters); hand | Words end at spaces, quotes, brackets, pipes, separators and the box-drawing bar. A word follows a soft wrap onto the next row. |
 | 20 | Drag to extend, edge autoscroll | `GhosttySelectionTests.testDraggingToTheTopEdgeScrollsALinePerMoveThroughTheScroller`, `testHitTestingAndRectsAtAFractionalScrollOffsetInHistory`; hand | Hit-testing and rects use the scroller's position (right at any fraction of a row and in history), and the edge scroll goes through the scroll surface, one line per finger move. |
-| 20a | The highlight is on the row under the finger | `GhosttySelectionTests.testPointToCellToRectRoundTripAtEveryRowScaleFontSizeAndScrollFraction`, `testAPressLowInARowSelectsThatRowAtAnyScrollFraction`, `testHitTestingWhenTheViewIsBottomAnchoredOrScaled`; hand (step 3) Hit-testing uses the frame's scroll shift. See "Hit-testing" below. |
+| 20a | The highlight is on the row under the finger | `GhosttySelectionTests.testPointToCellToRectRoundTripAtEveryRowScaleFontSizeAndScrollFraction`, `testAPressLowInARowSelectsThatRowAtAnyScrollFraction`, `testHitTestingWhenTheViewIsBottomAnchoredOrScaled`; hand (step 3) | Hit-testing uses the frame's scroll shift. See "Hit-testing" below. |
 | 21 | Copy, copy-on-select, shimmer, edit menu | `GhosttySelectionTests` (text and rects), `SelectionUITests.testCopyOnSelectHappensOnLiftAndAfterAnAdjustmentThatChangedSomething`; hand | The host does all four from `selectedText` and `selectionRects`, with the loupe, the selection haptics, handles and Select All in the menu ([selection.md](selection.md)). |
 | 22 | Copied text | `GhosttySelectionTests` | What the Ghostty app copies: soft-wrapped rows joined into one line, trailing spaces trimmed. |
 | 23 | Selection through output and resize | `GhosttySelectionTests.testTheSelectionSurvivesAReflow`, `testTheSelectionAndItsRectFollowOutput` | The terminal tracks the selection: it stays on its text through output, scrolling and a reflow. |
@@ -78,15 +78,15 @@ How a row is verified:
 | 39 | Mouse clicks and wheel reports, alternate scroll (arrows) | `GhosttyMouseTests`, `GhosttyScrollViewTests.testWheelDragSendsWheelReportsLineByLine`, `testTapSendsPressAndReleaseAtTheCell`, `testAlternateScrollSendsArrowKeysAndRespectsCursorKeyMode`; hand | Routing rules, wheel budget and formats as in `GhosttyMouseReporter`. A long press selects even when the program tracks the mouse (`testALiftedLongPressIsNotAClickForATrackingProgram`). |
 | 40 | Mode 1002 drag reports | read of the pan handlers | Touch sends none: a one-finger drag is the wheel, a pointer drag selects. Hover motion is reported under mode 1003. |
 | 41 | 120 Hz | `GhosttyRenderTests` (frame cost); hand on a device | The render thread's display link asks for 120 Hz. The simulator can't show it. |
-| 42 | Mirror-mode zoom and pan | hand | The terminal view is scaled by the zooming scroll view, so it is soft above 1×. Hit-testing uses the view's own coordinates. Mirror is only behind `-sizing mirror`; not run since the audit. |
+| 42 | Mirror-mode zoom and pan | hand | The terminal view is scaled by the zooming scroll view, so it is soft above 1×. Hit-testing uses the view's own coordinates. Mirror is only behind `-sizing mirror`. |
 | 43 | Fit-mode claim | `FitClaimTests`; live (the pane took the phone's grid and this client as owner; the owner was gone once the app was terminated) | Host code. |
-| 44 | "Resized elsewhere · tap to fit here", status chip | hand | Host code. Not run since the audit. |
-| 45 | Keyboard show / hide, any new view size | `GhosttyIntegrationTests.testResizingTheViewNeverScrollsTheTerminal`; hand | A view that grew (keyboard gone, unfold) stays at the bottom. (Before: UIKit's offset fix-up for the new size was sent on as a scroll, and the terminal was left scrolled into history.) |
+| 44 | "Resized elsewhere · tap to fit here", status chip | hand | Host code. |
+| 45 | Keyboard show / hide, any new view size | `GhosttyIntegrationTests.testResizingTheViewNeverScrollsTheTerminal`; hand | A view that grew (keyboard gone, unfold) stays at the bottom: UIKit's offset fix-up for the new size must not be sent on as a scroll, which leaves the terminal scrolled into history. |
 | 45a | The software keyboard covers a fitted pane | `GhosttyScrollTests` (the cover), `KeyboardCoverLayoutTests`; live (`-keyboardTest` over a real `claude` in a `zz-` session: the pane's tty size logged while the keyboard cycled through a streamed reply) | The grid keeps its rows on the main screen; the alternate screen fits above the keyboard. The cursor's row stays in view when the rows below it don't fit (an agent's subagent list), with no jitter from redraws. Reading mode (a drag into the scrollback hides the keyboard) needs a finger: hand. |
-| 45b | Jump-to-bottom button | `JumpToBottomRuleTests`, `JumpToBottomViewTests`; hand | Shows half a screen (at least 3 rows) into the scrollback, hides within a row of the bottom, during a selection or a pinch, and under a mouse program or the alternate screen. The tap returns to the newest line and leaves the keyboard and the focus alone. The touch itself (no keyboard, no pane swipe from it) needs a finger: hand. Run live in the simulator with `-keyboardTest` (`scroll:`, `jump`; the log gives `jump=`, `unseen=` and `first=`) in a `zz-` session, on the folded Duo, a regular iPhone and the simulated unfolded and landscape postures: the button comes up under a streaming agent reply and its arrow takes the cursor's color; `jump` returns to the bottom and the button goes; with the keyboard up the pane's size (`stty size`) stays through scroll and jump, the button sits above the key bar, and it stays hidden among the rows the keyboard covers; with the keyboard down `jump` leaves the terminal out of first responder; in `less` and `vim` it never shows; in a split only the scrolled pane has one; a recording of it coming and going shows the glass forming and leaving with no flash. |
+| 45b | Jump-to-bottom button | `JumpToBottomRuleTests`, `JumpToBottomViewTests`; live (`-keyboardTest` with `scroll:` and `jump` in a `zz-` session, on the folded Duo, a regular iPhone and the simulated unfolded and landscape postures; the log gives `jump=`, `unseen=` and `first=`); hand | Shows half a screen (at least 3 rows) into the scrollback; hides within a row of the bottom, during a selection or a pinch, and under a mouse program or the alternate screen (never in `less` or `vim`). Its arrow takes the cursor's color when output arrives below. The tap returns to the newest line and leaves the keyboard and the focus alone (keyboard down: the terminal stays out of first responder). With the keyboard up `stty size` stays through scroll and jump, the button sits above the key bar and never among the covered rows. In a split only the scrolled pane has one. The glass forms and leaves with no flash. The touch itself (no keyboard, no pane swipe from it) needs a finger: hand. |
 | 46 | Fold / unfold: the pool moves a live pane | `GhosttyIntegrationTests.testAPaneMovedToAnotherSuperviewDrawsAtOnceAndNothingWhileDetached`, `testSelectionAndCursorSurviveTheMove`; live (`-simulateDuo folded,unfolded,folded` on an iPad simulator) | Draws at once on return, at the new size and scale, without new output. Draws nothing and wakes nothing while detached. |
 | 46a | Book mode: a split lands on the crease | `BookSplitTests`, `CreaseSettleTests`; `BookSidebarTests`; live (`-simulateDuo book`, and `unfolded,book` with `-simulateDuoEvery` counting `FIT_RESIZE`); hand on a Duo | Partly folded with a vertical crease, the side-by-side divider nearest the crease sits on it and no pane or handle is in the fold. The inline sidebar collapses on the way in and comes back on the way out, unless the user showed or hid it meanwhile; nothing about it is stored. Rex's ratios don't change. Each pane gets one resize per settled change of posture and none while the fold flickers, and the sidebar doesn't move then either. Everything else is laid out as when flat ([duo-layout.md](duo-layout.md), Book mode). The simulated fold is a guess: step 12 checks a real hinge. |
-| 46b | Tent mode: the agent board covers the tab | `TentDetectorTests`, `BoardPresenceTests`, `AgentBoardModelTests`, `BoardOrderThrottleTests`, `BoardLayoutTests`, `PaneCoverTests`; live (`-boardDemo` in every scenario, and `-simulateTent off,90` with `-simulateTentEvery` counting `FIT_RESIZE`); hand on a Duo | The hinge decides only when the board comes and goes. Under it panes draw nothing, take no key and keep their size on the Mac; a pane that was never covered behaves as before. The simulator has no hinge and takes no taps from a script: step 13 checks a real one ([duo-layout.md](duo-layout.md), Tent mode). |
+| 46b | Tent mode: the agent board covers the tab | `TentDetectorTests`, `BoardPresenceTests`, `AgentBoardModelTests`, `BoardOrderThrottleTests`, `BoardLayoutTests`, `PaneCoverTests`; live (`-boardDemo` in every scenario, and `-simulateTent off,90` with `-simulateTentEvery` counting `FIT_RESIZE`); hand on a Duo | The hinge decides only when the board comes and goes. Under it panes draw nothing, take no key and keep their size on the Mac; a pane that was never covered is unaffected. The simulator has no hinge and takes no taps from a script: step 13 checks a real one ([duo-layout.md](duo-layout.md), Tent mode). |
 | 47 | Reconnect and resume | RexKit `Stream*` tests | Host and stream code. A fresh connection brings a snapshot; a resume carries none. Not run live. |
 | 48 | Background and foreground | `GhosttyIntegrationTests` (visibility), `GhosttyRenderTests.testViewDrawsThenIdlesThenStopsTheThread`; hand | No Metal work and no display-link wake in the background; one frame on return. After more than 30 s the host opens a fresh stream. A fitted pane is given back in the background and stays the Mac's until the app returns (live: `rex block call size` shows `owner: null` 4 s after backgrounding, the phone's client again on return). |
 | 49 | Reset and the `terminal.format` fallback | `GhosttySelectionTests.testTheViewNoticesWhenTheTerminalDroppedTheSelection`, `GhosttyCoreTests`, RexKit `StreamSnapshotHandoffTests` | A snapshot that doesn't decode, or is over the 16 MiB cap, falls back: `streamReset` feeds RIS and clear-scrollback, then `streamSnapshot` feeds the screen as text. |
@@ -136,23 +136,22 @@ With the selection UI (rows 27 and 28):
 - **OSC 52.** `GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE`. The callback copies the text and leaves; a
   burst becomes one hop to the main actor and the last write wins. No clipboard-read and no
   write-pty callback exist, so nothing can be sent back. OSC 1337 Copy and OSC 5522 writes arrive
-  the same way and are taken too. Only the pane the user works in may write (`setGate`). Live: the
-  Rex server's terminal also set the Mac's clipboard from the same sequence.
+  the same way and are taken too. Only the pane the user works in may write (`setGate`). The Rex
+  server's terminal also sets the Mac's clipboard from the same sequence.
 
 ## Hit-testing
 
 Every touch maps to a cell through one function, `GhosttyGridGeometry`, in device pixels with the
 frame's scroll shift: selection points, selection rects and the shimmer all use it. The scroll
 surface rests at any pixel offset, so the grid is drawn shifted up by the part of the first row
-scrolled past. A second conversion that ignored that shift once highlighted the row above the
-finger whenever the view was off the bottom. Don't add another.
+scrolled past. A second conversion that ignores that shift highlights the row above the finger
+whenever the view is off the bottom. Don't add another.
 
 ## Reflow
 
 The server's terminal and the local one are both Ghostty, the stream carries the server's resize
 at its place in the output, and both reflow there. So the host redraws nothing from the server
-after a width change. Checked live: after folded → unfolded → folded the local screen and
-`rex capture` had the same lines and the same wraps.
+after a width change.
 
 Where the two can still differ:
 
@@ -179,8 +178,8 @@ Three behaviours were choices, not necessities. They stand; each is one small ch
 
 In a `zz-find` session with `seq 1 3000; echo error` and a few lines with `error` in them:
 
-1. Software keyboard up: ⌘-less, pane menu → Find…. The find bar takes the key bar's place; the
-   keyboard doesn't move or flicker. Type `error`: the count shows, Return steps older.
+1. Software keyboard up: pane menu → Find…. The find bar takes the key bar's place; the keyboard
+   doesn't move or flicker. Type `error`: the count shows, Return steps older.
 2. Escape: the terminal has the keyboard and the key bar again; the bar floats in the pane. Tap
    its field: it goes back to the accessory slot. Done closes.
 3. Keyboard down: ⌘F (or the menu) raises the keyboard once; Done lowers it.
@@ -222,7 +221,7 @@ once with fit:
 5. Close Other Panes…: the dialog counts the panes; with an agent in one it says so.
 6. In the sidebar, press a tab row and move: it lifts, the accent line follows, the list scrolls
    at the edges. Drop: the row moves at once and stays. The same for a session row. Press without
-   moving: the menu, as before. Swipe: the actions, as before. With VoiceOver: Move Up, Move Down.
+   moving: the menu. Swipe: the actions. With VoiceOver: Move Up, Move Down.
 7. `-sidebarFoldBench 3` before and after: no slower.
 
 ## Floating windows (about 10 minutes)
@@ -233,7 +232,7 @@ session.new_layer '{"window_id": "<id>", "bounds": [0.3, 0.2, 0.5, 0.6], "layout
 once with fit:
 
 1. Unfolded (`-simulateDuo unfolded`): the float sits where the Mac has it, with a soft shadow
-   and the split stroke; the tiled pane under it is drawn as before. A second float overlaps it.
+   and the split stroke; the tiled pane under it is drawn unchanged. A second float overlaps it.
 2. Tap the back float: it comes to the front at once and stays there (`session_view_changed`
    shows it in front on the server). Tap it four more times: nothing more is sent.
 3. Pane menu ▸ Floating Windows ▸ Minimize: the float goes, the row for it appears; tap the row:
@@ -249,7 +248,7 @@ once with fit:
    Reduce Motion: every change fades. VoiceOver: the grabber says "2 of 3" and swipes up or
    down. `-panesTest 'sheet:show1;sheet:medium;sheet:next;sheet:hide'` drives the same paths.
 5. Book (`-simulateDuo book`) with one tiled pane and a float across the crease: the float sits
-   on one page, the tiled pane spans the fold as before.
+   on one page, the tiled pane spans the fold.
 6. Fit mode: the float's pane resizes on the Mac to its drawn frame once; minimized, the Mac gets
    its size back within a second.
 7. The tent board covers the floats as it covers any pane.
@@ -272,9 +271,9 @@ In a `zz-ports` session, with `python3 -m http.server 8765 --bind 127.0.0.1` in 
    15 minutes idle.
 7. The machine's sidebar header shows a globe and "1"; the sidebar has no new row. Tap it: a
    popover with a row "Python · <folder>" and `localhost:8765` under it. Tap the row: the
-   popover closes and the same page opens. Its menu has Copy Link
-   (the pasteboard holds `http://localhost:8765`), Show Pane (the pane comes on screen) and Stop.
-   Go to Anything lists "Open localhost:8765 · Python".
+   popover closes and the same page opens. Its menu has Copy Link (the pasteboard holds
+   `http://localhost:8765`), Show Pane (the pane comes on screen) and Stop. Go to Anything lists
+   "Open localhost:8765 · Python".
 8. Stop: the server stops in its pane and the row goes. Start it again with
    `python3 -m http.server 8765 &`: the row is back, and its menu has no Stop.
 
@@ -300,18 +299,20 @@ Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In th
 5. **Gestures (26).** Flick horizontally: the pane swipes (with two panes) and the terminal doesn't
    scroll. In a `zz-` session with three tabs, flick past the last pane: the next tab slides in on
    its first pane; past the last tab, the first; back from the first, the last tab on its last
-   pane. A one-pane tab and a split tab go straight to the tab beside. Two-finger tap: the pane zooms. Pinch: the text scales, and on release the font and
-   grid change without the screen being reloaded (18).
-6. **Keyboard (45, 45a, 45b, 12).** Tap to raise the keyboard, hide it with the key bar. Expected: the prompt
-   stays at the bottom both times, and `stty size` says the same before and after. With the
-   keyboard up, drag down: the covered rows, then the scrollback, and the keyboard goes away
+   pane. A one-pane tab and a split tab go straight to the tab beside. Two-finger tap: the pane
+   zooms. Pinch: the text scales, and on release the font and grid change without the screen
+   being reloaded (18).
+6. **Keyboard (45, 45a, 45b, 12).** Tap to raise the keyboard, hide it with the key bar. Expected:
+   the prompt stays at the bottom both times, and `stty size` says the same before and after. With
+   the keyboard up, drag down: the covered rows, then the scrollback, and the keyboard goes away
    without the text jumping; a tap brings it back. With the keyboard up and a slow loop printing,
    drag a few rows down and let go: the text you read holds still, nothing snaps back to the
    prompt, and the keyboard stays; a key or the jump-to-bottom button brings the prompt back
-   above the keyboard. A nudge of less than a row ends back at the prompt. Hold the space bar and slide: the cursor moves along the line.
-   Drag half a screen into the scrollback: the jump-to-bottom button comes up in the bottom
-   trailing corner, and its arrow takes the cursor's color when a command prints below. Tap it:
-   the view returns to the prompt, the keyboard stays down and the pane's focus doesn't change.
+   above the keyboard. A nudge of less than a row ends back at the prompt. Hold the space bar and
+   slide: the cursor moves along the line. Drag half a screen into the scrollback: the
+   jump-to-bottom button comes up in the bottom trailing corner, and its arrow takes the cursor's
+   color when a command prints below. Tap it: the view returns to the prompt, the keyboard stays
+   down and the pane's focus doesn't change.
 7. **Mouse program (39).** Run `vim` (or `less` on a long file). One-finger drag: the file scrolls
    (arrows or wheel), not the scrollback. Two-finger drag: nothing to scroll on the alternate
    screen. In vim with `:set mouse=a`, tap a line: the cursor goes there. Long press a word: it is
@@ -325,8 +326,8 @@ Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In th
    fit here" appears; tap it.
 10. **Taps (29, 30).** With the keyboard up, run
     `printf '\e]8;;https://example.com\e\\LINK\e]8;;\e\\ https://example.org\n'` and tap `LINK`,
-    then the address: each opens in Safari. Hide the keyboard and tap `LINK`: only the keyboard
-    comes back. In a shell with Ghostty's shell integration (`OSC 133;A;cl=line`), type
+    then the address: each opens in Safari. Hide the keyboard and tap `LINK`: it opens and the
+    keyboard stays down. In a shell with Ghostty's shell integration (`OSC 133;A;cl=line`), type
     `echo abcdefghij` and tap the `c`: the cursor goes there; a tap within 3 columns of the cursor
     moves nothing.
 11. **Background (48).** Send the app to the background for a few seconds and return: the screen is
@@ -336,14 +337,15 @@ Setup: on the Mac, `rex new zz-manual`, then in that pane run `seq 1 400`. In th
     is bent the sidebar slides away and the border between the panes moves onto the fold, with
     both panes clear of it and no text cut; flat again, the sidebar comes back at its width and
     the panes go back. Bend it again and show the sidebar by hand: it stays, flat or bent, and
-    quitting and opening the app shows the sidebar as usual. Then check what the simulator can only guess:
+    quitting and opening the app shows the sidebar as usual. Then check what the simulator can
+    only guess:
     - **Region width.** The gap between the panes is the fold's reserved region plus 6 pt. If
       it looks too wide or too narrow for the hinge, note the region's width (`Division.frame`).
     - **When it turns active.** Note the angle at which the layout changes each way. It should
       not change while the phone is merely not quite flat on a table.
     - **Jitter.** Hold the phone at that angle for 20 s. The layout must not flip back and
       forth, and with a Debug build `FIT_RESIZE` must stay silent while the layout is still
-      (docs/debug-args.md). Each real change is one line per pane.
+      ([debug-args.md](debug-args.md)). Each real change is one line per pane.
     - **The crease stays put.** Flat and bent, the fold's middle should be the same x; if it
       moves by more than a point, book mode drops and comes back 400 ms later (`CreaseSettle`).
     - Drag a border that is not on the fold: it follows the finger. The border on the fold
@@ -409,7 +411,7 @@ step says so.
 7. **Taps.** Double tap a word: selected, copied (two-beat haptic, shimmer), handles and menu. Triple
    tap: the whole line (a wrapped line: all of it). Tap elsewhere: selection, handles and menu go.
    With the keyboard down, the first tap of a double tap raises the keyboard (known; see
-   selection.md, open question 2).
+   selection.md, Open questions, 2).
 8. **Paste by the cursor.** Keyboard up, tap within a few characters of the cursor: Paste appears.
    Tap again: it goes. Tap far from the cursor: no menu.
 9. **Select All.** Long press a word, choose Select All. Expected: everything highlights, no copy

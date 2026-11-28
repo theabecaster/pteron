@@ -6,7 +6,8 @@ coding agents and just as useful to people. This page is the short way in.
 
 The repository holds three programs:
 
-- `Pteron/` and `Packages/RexKit/`: the iOS app (Swift, SwiftUI and UIKit).
+- `Pteron/`, `Packages/`, `PteronWidgets/` and `PteronWatch/`: the iOS app, its widgets and its
+  watch app (Swift, SwiftUI and UIKit).
 - `Relay/`: Pteron Beacon, which sends push notifications from a computer (Rust).
 - `Gateway/`: the push gateway that passes them to Apple (TypeScript on Cloudflare Workers).
 
@@ -14,9 +15,10 @@ The repository holds three programs:
 
 - The product's name is said in two places: `Brand` in `Packages/RexGlance` (the app, the
   controls and every sentence they show) and `Relay/src/brand.rs` (Beacon). `APP_DISPLAY_NAME`
-  in `project.yml` repeats it for the two Info.plists and `BEACON=` in `Relay/setup.sh` for the
-  installer; tests hold both to the constants. Old spellings that must stay are listed under "The product name" in AGENTS.md
-  (bundle ids, `rexduo://`, `rex-duo-helper`): shipped apps and Beacons depend on them.
+  in `project.yml` repeats it for the Info.plists and `BEACON=` in `Relay/setup.sh` for the
+  installer; tests hold both to the constants. Old spellings that must stay are listed in
+  AGENTS.md, Conventions (bundle ids, `rexduo://`, `rex-duo-helper`): shipped apps and Beacons
+  depend on them.
 - `Brand/` holds the art under neutral names: `AppIcon.icon` and `BeaconIcon.icon` (Icon
   Composer documents, compiled by actool), `launch-art.png` and `launch-outline.svg` (the
   launch screen's picture and its outline), `glyph.svg`.
@@ -61,7 +63,9 @@ xcodebuild -project Pteron.xcodeproj -scheme Pteron -destination id=<simulator i
 xcodebuild -project Pteron.xcodeproj -scheme Pteron -destination id=<simulator id> \
   -derivedDataPath build/dd test                  # app tests in the simulator, about 1 minute
 swift test --package-path Packages/RexKit         # protocol and stream tests on macOS
-swift test --package-path Packages/RexGlance      # the links shared with the extension, on macOS
+swift test --package-path Packages/RexGlance      # what the app shares with its extensions, on macOS
+xcodebuild -project Pteron.xcodeproj -scheme PteronWatch -destination id=<watch simulator id> \
+  -derivedDataPath build/dd-watch test            # the watch app, on a watchOS simulator
 cargo test --manifest-path Relay/Cargo.toml       # the helper
 (cd Gateway && npm ci && npx vitest run)          # the gateway
 ```
@@ -91,6 +95,7 @@ covers the layers, the data flow and where new code goes. The other documents:
 - [duo-layout.md](duo-layout.md) and [sidebar.md](sidebar.md): layout, postures and the sidebar.
 - [notifications.md](notifications.md): in-app toasts, push notifications, the contract between
   the app and the helper, and installing the helper from the app.
+- [glance.md](glance.md): the widgets, the controls, the `rexduo:` links and the watch app.
 - [helper.md](helper.md): installing the helper by hand and how it updates.
   [Relay/README.md](../Relay/README.md): the helper's internals.
   [Gateway/README.md](../Gateway/README.md): the gateway's API, limits and deploy.

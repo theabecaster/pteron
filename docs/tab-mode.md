@@ -2,7 +2,7 @@
 
 Tab mode is the app's second navigation style, like the Rex Mac app's horizontal tabs: a tab
 strip takes the title bar's place, and there is no sidebar. Sidebar mode is the
-default and is unchanged. The choice is Settings → Appearance → Navigation: Sidebar or Tabs
+default. The choice is Settings → Appearance → Navigation: Sidebar or Tabs
 (`NavigationStyle`, stored as `Prefs.navigation`).
 
 A change applies at once. `SidebarSplit` stops building the sidebar and gives the tab the
@@ -23,7 +23,7 @@ width alone. Left to right:
 | Waiting pill | Agents waiting elsewhere. A tap shows the first. |
 | Unzoom | Only while the tab is zoomed. |
 | New Tab | "+". |
-| Floating windows | A narrow tab's control for its floating windows, only while it has one. |
+| Floating windows | A narrow tab's control for its floating windows, only while it has one (`hasFloatsControl`: one more 44 pt slot, so the strip turns compact 44 pt sooner). |
 | Pane menu | Pane Actions, as in the title bar. |
 
 - Every part a finger taps is 44 pt wide or more. 6 pt lie between the session chip and the
@@ -56,15 +56,14 @@ A chip shows up to three pane icons, the tab's title and its status (`TabChip`, 
   pane's icon is in front at full size: the pane on screen on the active chip, the tab's own
   active pane on any other. Behind it come the panes after it in the tab's order, round to the
   first, each 6 pt further right and 2 pt higher, smaller (82 %, then 68 %) and dimmer, with a
-  1.5 pt cutout around the icon over it. A stack of two is 21 pt wide and of three 27 pt,
-  where a row of icons took 33 and 51 pt. A one-pane tab shows its one icon, as before.
+  1.5 pt cutout around the icon over it. A stack of two is 21 pt wide and of three 27 pt. A
+  one-pane tab shows its one icon.
 - A new active pane on the same chip (a tap on another pane, a swipe between panes, a split's
   focus moving) brings its icon forward and sends the old one back in a 0.25 s spring. A tab
   switch, a chip's first draw and a relayout show the new order at once
   (`TabChip.stackMoves`). With Reduce Motion the stack crossfades. The motion is a transaction
   on the front pane's id changing: nothing runs while it rests.
-- The icons are decoration: VoiceOver reads the chip as before.
-
+- The icons are decoration, hidden from VoiceOver.
 - The active chip is a filled capsule. It shows the status of the pane on screen, the waking
   mark and a close button. The close button goes where the chips have less than 144 pt; Close
   Tab stays in the pane menu.
@@ -74,9 +73,9 @@ A chip shows up to three pane icons, the tab's title and its status (`TabChip`, 
 - Touch and hold: Rename Tab…, Move Tab Backward, Move Tab Forward, Move to Session (a submenu
   of the computer's other sessions, in sidebar order, on a computer at revision 22 or later;
   [sidebar.md](sidebar.md), Move to Session), Close Tab, Close Other Tabs. They run what the
-  sidebar's tab rows run (`StripRoutes`). VoiceOver's actions on a chip add "Move to ops" for
-  each session (`TabChip.spokenActions`). A tab with an agent, or with
-  two panes or more, asks before it closes; Close Other Tabs always asks.
+  sidebar's tab rows run (`StripRoutes`). VoiceOver's actions on a chip add "Move to <session>"
+  for each session (`TabChip.spokenActions`). A tab with an agent, or with two panes or more,
+  asks before it closes, as everywhere (`CloseTabAsk`); Close Other Tabs always asks.
 - A question shows from the control that was tapped, never from the bottom of the screen:
   Close Tab at the chip's close button (at the chip, from its menu), Close Other Tabs at the
   chip, and Close Pane, Close Tab and Close Other Panes from the pane menu at the pane menu
@@ -134,14 +133,17 @@ tall enough.
 | Move a tab to another session | tab row's menu, drag onto the session | chip's menu; Move Tab to Session… |
 
 - Show/Hide Sidebar does nothing in tab mode and isn't in the palette. The swipe from the left
-  edge is off. The board's "+K more" opens the Agents sheet.
+  edge is off. cmd+. and the board's "+K more" open the Agents sheet (`AppModel.showAgents`).
 - With no tab on screen the strip stays, for its session chip, and the screen says "Pick a
-  session." with Change Session. A computer that is down shows its offline screen below the
-  strip, so another computer's sessions stay a tap away.
-- Nothing in tab mode writes the sidebar's state (`SidebarState.write`). Back in sidebar mode
-  it shows as it was left.
+  session." with Change Session, which opens the palette's sessions. A computer that is down
+  shows its offline screen below the strip, so another computer's sessions stay a tap away; its
+  Show Sidebar is Change Session.
+- Nothing in tab mode writes the sidebar's state (`SidebarState.write`): not a tab that is
+  shown, not book mode, not a key. Back in sidebar mode it shows as it was left, except that the
+  list starts at its top and the tab on screen has its row, session and computer unfolded.
 - Typing in a short window (a phone on its side) hides the strip with the keyboard, as it
-  hides the title bar, so the terminal keeps its rows. Hide Keyboard brings it back.
+  hides the title bar, so the terminal keeps its rows. Hide Keyboard brings it back; hardware
+  keys work meanwhile.
 
 ## Postures and the crease
 
@@ -187,7 +189,7 @@ keyboard. So the row's action is held until the popover has gone (`DismissalWait
 - Rows that present nothing (a session, New Session, Reconnect) run at once.
 - Tab mode's surfaces use it: the session chip's popover, and the ports sheet, where the
   sheet's own dismissal is the signal.
-  Sidebar mode's title menu and its ports popover wait a fixed 350 ms, as before.
+  Sidebar mode's title menu and its ports popover wait a fixed 350 ms.
 
 The sleep behind the cap is given to the type, so `DismissalWaitTests` drive the cap
 themselves and no test waits on a clock.
