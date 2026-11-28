@@ -1,0 +1,68 @@
+name: TestFlight
+
+# Archives main and uploads it to App Store Connect on GitHub's machines, so a release doesn't wait
+# for a busy build Mac. Started by hand only (`gh workflow run testflight.yml --ref main -f
+# build=<n>`); scripts/testflight.sh --skip-upload --build <n> then sets the notes, waits for
+# review and adds the build to the testers' group (docs/release.md, TestFlight).
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Build number, higher than the last upload (such as 2611280140)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pteron-testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    # The App Store Connect key lives only in the testflight environment's secrets, which GitHub
+    # hands to runs on main alone. Pull requests, forks and other branches never reach them.
+    if: github.ref == 'refs/heads/main'
+    environment: testflight
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      # Pinned by commit: this job holds a secret. They are the commits of the v4 tags ci.yml uses.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Xcode 27.2
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.2.app
+          xcodebuild -version
+      # The same cache as ci.yml's, so main's test run has usually built the framework already.
+      - name: Restore the Ghostty framework
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            Vendor/GhosttyVt.xcframework
+            Vendor/GhosttyVt.stamp
+          key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ghostty.version', 'scripts/ghostty-patches/*.patch', 'scripts/check-ghostty.sh') }}
+      - name: Ghostty framework
+        run: scripts/build-ghostty.sh
+      - name: XcodeGen
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          xcodegen generate --quiet
+      # The key is written to the runner's temp folder, readable by this user only, and removed
+      # at the end. Nothing prints it. The build number arrives through the environment, never
+      # pasted into the script, and ship-macdesk.sh refuses anything but digits and dots.
+      - name: Archive and upload
+        env:
+          BUILD: ${{ inputs.build }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_AUTH_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_AUTH_ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          export ASC_AUTH_KEY="$RUNNER_TEMP/asc-key.p8"
+          trap 'rm -f "$ASC_AUTH_KEY"' EXIT
+          (umask 077; printf '%s\n' "$ASC_KEY_P8" > "$ASC_AUTH_KEY")
+          unset ASC_KEY_P8
+          rc=0; zsh scripts/ship-macdesk.sh "$BUILD" || rc=$?
+          cat build/ship.log 2>/dev/null || true
+          exit $rc

@@ -3,6 +3,8 @@
 # (keychain unlocked), from a copy of the repo that already has the generated project:
 # see docs/release.md. Usage: scripts/ship-macdesk.sh <build-number>
 # DEST=export writes build/export/Pteron.ipa and uploads nothing.
+# ASC_AUTH_KEY (a .p8 file), ASC_AUTH_KEY_ID and ASC_AUTH_ISSUER sign through an App Store Connect
+# API key instead of the Mac's Xcode account: the TestFlight workflow on GitHub's machines sets them.
 # Exits non-zero when any step fails. The log (build/ship.log) ends with "== done ... rc=0" only
 # after a successful export or upload, and with "== <STEP>_FAILED" otherwise.
 cd "${0:A:h}/.." || exit 1
@@ -15,6 +17,12 @@ fi
 BUILD=$1
 # xcodebuild, or a stand-in when the script itself is being tested.
 XCODEBUILD=${XCODEBUILD:-xcodebuild}
+AUTH=()
+if [[ -n ${ASC_AUTH_KEY:-} ]]; then
+  [[ -f $ASC_AUTH_KEY && -n ${ASC_AUTH_KEY_ID:-} && -n ${ASC_AUTH_ISSUER:-} ]] \
+    || { echo "ship-macdesk.sh: ASC_AUTH_KEY needs the key file, ASC_AUTH_KEY_ID and ASC_AUTH_ISSUER" >&2; exit 2; }
+  AUTH=(-authenticationKeyPath "$ASC_AUTH_KEY" -authenticationKeyID "$ASC_AUTH_KEY_ID" -authenticationKeyIssuerID "$ASC_AUTH_ISSUER")
+fi
 # The copy must hold the libghostty-vt framework for this tree's pins (scripts/sync-macdesk.sh
 # sends it). Checked before the log redirect so the reason reaches the caller.
 scripts/check-ghostty.sh || { echo "ship-macdesk.sh: run scripts/sync-macdesk.sh from a checkout with a current framework, then retry" >&2; exit 1; }
@@ -29,7 +37,7 @@ rm -rf build/Pteron.xcarchive build/export
 # Each xcodebuild's own status is taken from the pipe: the filter after it always succeeds.
 $XCODEBUILD -project Pteron.xcodeproj -scheme Pteron -configuration Release \
   -destination "generic/platform=iOS" -derivedDataPath build/dd \
-  -allowProvisioningUpdates \
+  -allowProvisioningUpdates $AUTH \
   CURRENT_PROJECT_VERSION=$BUILD -archivePath build/Pteron.xcarchive archive | grep -E "error:|ARCHIVE|warning: .*sign"
 rc=$pipestatus[1]
 if (( rc != 0 )) || [[ ! -d build/Pteron.xcarchive ]]; then echo "== ARCHIVE_FAILED $(date) rc=$rc"; exit 1; fi
@@ -43,7 +51,7 @@ cat > build/ExportOptions.plist <<P
 <key>testFlightInternalTestingOnly</key><false/></dict></plist>
 P
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH $XCODEBUILD -exportArchive -archivePath build/Pteron.xcarchive -exportOptionsPlist build/ExportOptions.plist \
-  -exportPath build/export -allowProvisioningUpdates 2>&1 | tail -25
+  -exportPath build/export -allowProvisioningUpdates $AUTH 2>&1 | tail -25
 rc=$pipestatus[1]
 if (( rc != 0 )); then echo "== EXPORT_FAILED $(date) rc=$rc"; exit 1; fi
 if [[ "${DEST:-upload}" == export && ! -f build/export/Pteron.ipa ]]; then echo "== EXPORT_FAILED $(date) no build/export/Pteron.ipa"; exit 1; fi

@@ -101,6 +101,22 @@ scripts/sync-macdesk.sh
 ssh <build host> "sudo launchctl asuser \$(id -u) sudo -u \$USER zsh -lc '~/rexduo-build/scripts/ship-macdesk.sh <build>'"
 ```
 
+Or upload from GitHub's machines, when the build Macs are busy: the workflow `TestFlight`
+(`.github/workflows/testflight.yml`) archives main and uploads it, then step 3 on finishes it.
+Push main first and let CI's tests pass for that commit; the workflow runs no tests.
+
+```sh
+gh workflow run testflight.yml --ref main -f build=<build>
+gh run watch <run id> --exit-status
+scripts/testflight.sh notes.txt --skip-upload --build <build>
+```
+
+- It signs with the App Store Connect API key (`ASC_AUTH_KEY`, `ASC_AUTH_KEY_ID` and
+  `ASC_AUTH_ISSUER` for `ship-macdesk.sh`), held in the secrets of the repository's `testflight`
+  environment. GitHub gives that environment's secrets to runs on main only, so pull requests,
+  forks and other branches never reach the key. Nothing prints it, and the runner deletes it.
+- It is started by hand only, and one runs at a time.
+
 `launchctl asuser` runs the script inside the GUI session; plain ssh can't reach the keychain.
 `ship-macdesk.sh` archives, exports with `destination=upload` (set `DEST=export` to only export) and
 logs to `~/rexduo-build/build/ship.log` on the build Mac. Builds appear in TestFlight 5–15 minutes later.
