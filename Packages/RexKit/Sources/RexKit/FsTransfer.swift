@@ -57,8 +57,16 @@ public final class FsUploader {
 
     /// How often a lost upload is sent again from the start.
     public static let retryLimit = 2
-    /// How long the server has to put everything in place after the end.
+    /// How long the server has at least to put everything in place after the end
+    /// (`confirmWait` adds the time the plan's entries and content take).
     public static let closeWait: Duration = .seconds(60)
+    /// How many entries a second the server puts in place: about 210 on an M-series Mac
+    /// (30,032 small files in 143 s, probed), from the stream's start, as the archive arrives far
+    /// faster. The progress counts on it.
+    static let placeRate = 200.0
+    /// The slowest server waited for: a tenth of that, and 8 MiB of content a second.
+    static let slowestPlaceRate = 20.0
+    static let slowestWriteRate = 8.0 * 1_048_576
     /// The most bytes one pacing turn covers: two messages.
     static let grant = 2 * BytesStream.maxMessage
 
@@ -138,12 +146,36 @@ public final class FsUploader {
         return dest
     }
 
+    /// How long the server has to confirm after the end: `closeWait`, and the time the slowest
+    /// server takes to put `entries` and `size` bytes of content in place. The protocol shows no
+    /// progress meanwhile: the server says nothing, and doesn't even answer a ping on the data
+    /// connection (132 s for 30,032 entries, probed), so the wait is scaled, not reset. A Cancel
+    /// ends it at any time.
+    static func confirmWait(entries: Int, size: Int64) -> Duration {
+        closeWait + .seconds(Double(entries) / slowestPlaceRate) + .seconds(Double(size) / slowestWriteRate)
+    }
+
+    /// The bytes the progress shows `elapsed` after the stream started: the bytes sent, or the
+    /// share of the archive the entries the server has likely put in place stand for, whichever
+    /// is less, and never the whole archive before the server confirms. A single large file
+    /// shows its bytes; many small ones keep moving while the server puts them in place, and
+    /// wait at 99% if it is slower than `placeRate`.
+    static func shown(sent: Int64, archive: Int64, entries: Int, elapsed: Duration) -> Int64 {
+        let placed = min(1, UploadRate.seconds(elapsed) * placeRate / Double(max(entries, 1)))
+        return max(0, min(sent, Int64(Double(archive) * placed), archive - 1))
+    }
+
     /// Sends the archive and its end over `socket`, then waits for the server's confirmation.
     private func stream(_ plan: TarPlan, over socket: any TunnelSocket,
                         progress: @escaping @MainActor (Int64, Int64) -> Void) async throws {
         let stream = TarStream(plan)
         let pacer = UploadPacer(link: link, rate: rate, sleep: sleep)
         defer { rate = pacer.rate }
+        let start = ContinuousClock.now
+        let shown: @MainActor (Int64) -> Void = { sent in
+            progress(Self.shown(sent: sent, archive: plan.archiveSize, entries: plan.entries, elapsed: .now - start),
+                     plan.archiveSize)
+        }
         progress(0, plan.archiveSize)
         do {
             var sent: Int64 = 0
@@ -154,7 +186,7 @@ public final class FsUploader {
                 let n = try await Self.push(stream, to: socket, upTo: grant)
                 if n == 0 { break }
                 sent += Int64(n)
-                progress(sent, plan.archiveSize)
+                shown(sent)
             }
             if cancelled { throw Failure.cancelled }
             endSent = true
@@ -173,7 +205,17 @@ public final class FsUploader {
             if cancelled { throw Failure.cancelled }
             throw endSent ? Failure.unconfirmed : Failure.lost(error.localizedDescription)
         }
-        try await waitForClose(socket)
+        // The server is still putting entries in place: the estimate keeps the progress moving.
+        let ticker = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled, !self.cancelled else { return }
+                shown(plan.archiveSize)
+            }
+        }
+        defer { ticker.cancel() }
+        try await waitForClose(socket, wait: Self.confirmWait(entries: plan.entries, size: plan.size))
+        progress(plan.archiveSize, plan.archiveSize)
     }
 
     /// Up to `max` bytes of the archive as messages of at most 64 KiB, read and sent off the main
@@ -190,12 +232,12 @@ public final class FsUploader {
         return sent
     }
 
-    /// The server closes once everything is in place: 1000 when it took it.
-    private func waitForClose(_ socket: any TunnelSocket) async throws {
+    /// The server closes once everything is in place: 1000 when it took it. Waits `wait` at most.
+    private func waitForClose(_ socket: any TunnelSocket, wait: Duration) async throws {
         let timedOut = TimeoutFlag()
         let sleep = self.sleep
         let timer = Task { @MainActor in
-            await sleep(Self.closeWait)
+            await sleep(wait)
             guard !Task.isCancelled else { return }
             timedOut.set = true
             socket.abort()

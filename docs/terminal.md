@@ -1324,7 +1324,17 @@ in [rex-protocol.md](rex-protocol.md), Folders and Files.
     (`UploadPacer`, the same rate and window as single files) and shows progress in whole
     percents. A file that changes size while it is read stops the send ("… changed while it was
     read"); a lost stream starts over from the start, at most twice; once the end has gone out a
-    lost confirmation says to check the pane. Too little room on the computer (Rex wants the
+    lost confirmation says to check the pane.
+  - **While the server puts it in place.** The server takes the archive far faster than it
+    writes the entries: about 210 a second on an M-series Mac, so 30,032 small files are in place
+    143 s after the stream began, long after the last byte left (1 s). The protocol shows no sign
+    of that work (no message, and the data connection doesn't even answer a ping until it is
+    done), so the wait for the confirmation is scaled to the plan (`FsUploader.confirmWait`: 60 s,
+    plus 50 ms an entry and 8 MiB of content a second, a server ten times slower than probed),
+    and the percent shows the bytes sent or the entries likely in place at 200 a second, whichever
+    is less (`FsUploader.shown`). It moves while the server works, and stops at 99% until the
+    server confirms. Cancel applies throughout. Out of background time, the send stops as any
+    other ("stopped in the background", Try Again), and the fs block's close leaves nothing. Too little room on the computer (Rex wants the
     size and 2 GiB to spare) is said before anything goes.
   - **Cancel frees the sender at once.** `FsUploader.cancel` ends the send wherever it waits
     (the start's answer, the data connection's handshake, the pause before a retry, the stream,

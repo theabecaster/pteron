@@ -232,7 +232,11 @@ throwaway session, 2026-11-27.
     destination when done, about 220 entries a second (13 s for 3,005 small files, probed
     2026-11-27). Meanwhile `block.close` answers at once and stops it (the stream closes with
     4000, the staging folder goes, nothing lands); a client that closes its data connection
-    doesn't stop it. `upload_begin` answers at once: nothing is walked.
+    doesn't stop it. `upload_begin` answers at once: nothing is walked. The server reads a
+    30 MB archive of 30,032 small files in about 1 s and puts the entries in place at about 210 a
+    second from the stream's start, done after 143 s; a 300 MB file is written as it arrives and
+    confirmed 40 ms after the end. Nothing shows that work: the data connection answers a ping
+    only once it is over (132 s), and no event comes.
   - An existing folder is merged into and an existing file replaced, silently: why the app
     never uploads into a folder that may hold the same names.
   - A top-level count other than `roots`, an entry with `..` or an absolute path, and an entry

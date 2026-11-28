@@ -288,6 +288,81 @@ final class FsTransferTests: XCTestCase {
         XCTAssertTrue(socket.closedByClient)
     }
 
+    // MARK: Waiting for the server to put everything in place
+
+    /// 30,032 small files took the server 143 s after the stream began (probed): far past the
+    /// 60 s once waited, and well inside the wait now.
+    func testTheConfirmationWaitGrowsWithTheEntriesAndContent() {
+        func seconds(_ entries: Int, _ size: Int64) -> Double { UploadRate.seconds(FsUploader.confirmWait(entries: entries, size: size)) }
+        XCTAssertEqual(seconds(3, 0), 60.15, accuracy: 0.001)
+        XCTAssertEqual(seconds(30_032, 1_920_000), 60 + 1_501.6 + 0.229, accuracy: 0.01)
+        XCTAssertEqual(seconds(3, 2 << 30), 60.15 + 256, accuracy: 0.001)
+    }
+
+    /// A single large file shows its bytes; many small ones show what the server has likely put
+    /// in place; nothing shows the whole archive before the server confirms.
+    func testTheProgressIsTheLesserOfTheBytesAndThePlacing() {
+        // One file: the bytes.
+        XCTAssertEqual(FsUploader.shown(sent: 500, archive: 1_000, entries: 1, elapsed: .seconds(1)), 500)
+        XCTAssertEqual(FsUploader.shown(sent: 1_000, archive: 1_000, entries: 1, elapsed: .seconds(1)), 999)
+        // 30,000 entries, all sent after 1 s: the placing, about 150 s in all.
+        XCTAssertEqual(Double(FsUploader.shown(sent: 30_000_000, archive: 30_000_000, entries: 30_000, elapsed: .seconds(1))),
+                       200_000, accuracy: 1)
+        XCTAssertEqual(Double(FsUploader.shown(sent: 30_000_000, archive: 30_000_000, entries: 30_000, elapsed: .seconds(75))),
+                       15_000_000, accuracy: 1)
+        // A server slower than expected: 99% until it confirms.
+        XCTAssertEqual(FsUploader.shown(sent: 30_000_000, archive: 30_000_000, entries: 30_000, elapsed: .seconds(600)), 29_999_999)
+        XCTAssertEqual(FsUploader.shown(sent: 0, archive: 1_024, entries: 1, elapsed: .zero), 0)
+    }
+
+    /// The server takes its time over many entries: the wait is the plan's, and the progress
+    /// keeps moving short of the whole until the server confirms.
+    func testTheProgressMovesWhileTheServerPutsEntriesInPlace() async throws {
+        for i in 0..<300 { try write("Many/f\(i).txt", Data("x".utf8)) }
+        let plan = try TarPlan.build([.init(url: dir.appendingPathComponent("Many"), name: "Many")], inside: "pteron-test")
+        let link = link(), socket = FsFakeSocket()
+        socket.closeOnEnd = nil
+        let up = uploader(link, [socket])
+        var waits: [Duration] = []
+        up.sleep = { d in
+            if d >= FsUploader.closeWait { waits.append(d); try? await Task.sleep(for: .seconds(30)) } else { await Task.yield() }
+        }
+        var seen: [Int64] = []
+        let task = Task { try await up.send(plan, to: "/tmp") { sent, _ in seen.append(sent) } }
+        let ended = await eventually { socket.sawEnd }
+        XCTAssertTrue(ended)
+        let atEnd = seen.last ?? 0
+        XCTAssertLessThan(atEnd, plan.archiveSize)
+        // 301 entries: about 1.5 s of placing.
+        try await Task.sleep(for: .milliseconds(800))
+        let later = seen.last ?? 0
+        XCTAssertGreaterThan(later, atEnd)
+        XCTAssertLessThan(later, plan.archiveSize)
+        socket.serve(Data(), then: 1000)
+        let dest = try await task.value
+        XCTAssertEqual(dest, "/private/tmp")
+        XCTAssertEqual(seen.last, plan.archiveSize)
+        XCTAssertEqual(waits, [FsUploader.confirmWait(entries: plan.entries, size: plan.size)])
+    }
+
+    /// A server that never confirms still ends, once the plan's wait is over.
+    func testAServerThatNeverConfirmsEndsAfterThePlansWait() async throws {
+        let link = link(), socket = FsFakeSocket(), plan = try plan()
+        socket.closeOnEnd = nil
+        let up = uploader(link, [socket])
+        var waits: [Duration] = []
+        up.sleep = { d in
+            if d >= FsUploader.closeWait { waits.append(d) } else { await Task.yield() }
+        }
+        do {
+            _ = try await up.send(plan, to: "/tmp") { _, _ in }
+            XCTFail("should fail")
+        } catch {
+            XCTAssertEqual(error as? FsUploader.Failure, .unconfirmed)
+        }
+        XCTAssertEqual(waits, [FsUploader.confirmWait(entries: plan.entries, size: plan.size)])
+    }
+
     // MARK: Cancelling an upload
 
     /// A slow link: the start's answer is still on its way at the cancel. The upload ends at
